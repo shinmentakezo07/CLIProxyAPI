@@ -2,14 +2,14 @@ package executor
 
 import (
 	"context"
-
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
