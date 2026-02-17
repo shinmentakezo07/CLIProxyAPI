@@ -1,0 +1,5 @@
+{
+  "contents": [
+    {"role":"model","parts":[{"functionCall":{"name":"toolA","args":"{not-json"}}]}
+  ]
+}

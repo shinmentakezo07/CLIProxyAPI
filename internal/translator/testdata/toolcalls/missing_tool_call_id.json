@@ -1,0 +1,6 @@
+{
+  "contents": [
+    {"role":"model","parts":[{"functionCall":{"name":"toolA","args":{"x":1}}}]},
+    {"role":"user","parts":[{"functionResponse":{"name":"toolA","response":{"content":{"ok":true}}}}]}
+  ]
+}

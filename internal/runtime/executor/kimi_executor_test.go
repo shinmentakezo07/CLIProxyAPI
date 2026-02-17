@@ -3,6 +3,7 @@ package executor
 import (
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/toolcall"
 	"github.com/tidwall/gjson"
 )
 
@@ -201,5 +202,16 @@ func TestNormalizeKimiToolMessageLinks_RepairsIDsAndReasoningTogether(t *testing
 	}
 	if got := gjson.GetBytes(out, "messages.2.reasoning_content").String(); got != "r1" {
 		t.Fatalf("messages.2.reasoning_content = %q, want %q", got, "r1")
+	}
+}
+
+func TestNormalizeKimiToolMessageLinks_ResultReferencesPriorCallInvariant(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","call_id":"call_1","content":"ok"}]}`)
+	out, err := normalizeKimiToolMessageLinks(body)
+	if err != nil {
+		t.Fatalf("normalizeKimiToolMessageLinks() error = %v", err)
+	}
+	if err := toolcall.ValidateToolResultReferences(out); err != nil {
+		t.Fatalf("ValidateToolResultReferences() error = %v", err)
 	}
 }

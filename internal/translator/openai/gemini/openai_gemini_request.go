@@ -6,12 +6,12 @@
 package gemini
 
 import (
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/toolcall"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -26,17 +26,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 	root := gjson.ParseBytes(rawJSON)
 
-	// Helper for generating tool call IDs in the form: call_<alphanum>
-	genToolCallID := func() string {
-		const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-		var b strings.Builder
-		// 24 chars random suffix
-		for i := 0; i < 24; i++ {
-			n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
-			b.WriteByte(letters[n.Int64()])
-		}
-		return "call_" + b.String()
-	}
+	tracker := toolcall.NewTracker("gemini")
 
 	// Model mapping
 	out, _ = sjson.Set(out, "model", modelName)
@@ -112,7 +102,6 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	out, _ = sjson.Set(out, "stream", stream)
 
 	// Process contents (Gemini messages) -> OpenAI messages
-	var toolCallIDs []string // Track tool call IDs for matching with tool results
 
 	// System instruction -> OpenAI system message
 	// Gemini may provide `systemInstruction` or `system_instruction`; support both keys.
@@ -209,19 +198,17 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 					// Handle function calls (Gemini) -> tool calls (OpenAI)
 					if functionCall := part.Get("functionCall"); functionCall.Exists() {
-						toolCallID := genToolCallID()
-						toolCallIDs = append(toolCallIDs, toolCallID)
+						functionName := toolcall.ShortenName(functionCall.Get("name").String(), 64)
+						toolCallID := tracker.RegisterCall(functionName, functionCall.Get("id").String())
 
 						toolCall := `{"id":"","type":"function","function":{"name":"","arguments":""}}`
 						toolCall, _ = sjson.Set(toolCall, "id", toolCallID)
-						toolCall, _ = sjson.Set(toolCall, "function.name", functionCall.Get("name").String())
-
-						// Convert args to arguments JSON string
+						toolCall, _ = sjson.Set(toolCall, "function.name", functionName)
+						argsRaw := ""
 						if args := functionCall.Get("args"); args.Exists() {
-							toolCall, _ = sjson.Set(toolCall, "function.arguments", args.Raw)
-						} else {
-							toolCall, _ = sjson.Set(toolCall, "function.arguments", "{}")
+							argsRaw = args.Raw
 						}
+						toolCall, _ = sjson.Set(toolCall, "function.arguments", toolcall.NormalizeArgumentsObjectString(argsRaw))
 
 						toolCallsWrapper, _ = sjson.SetRaw(toolCallsWrapper, "arr.-1", toolCall)
 						toolCallsCount++
@@ -229,10 +216,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 					// Handle function responses (Gemini) -> tool role messages (OpenAI)
 					if functionResponse := part.Get("functionResponse"); functionResponse.Exists() {
-						// Create tool message for function response
 						toolMsg := `{"role":"tool","tool_call_id":"","content":""}`
-
-						// Convert response.content to JSON string
 						if response := functionResponse.Get("response"); response.Exists() {
 							if contentField := response.Get("content"); contentField.Exists() {
 								toolMsg, _ = sjson.Set(toolMsg, "content", contentField.Raw)
@@ -241,17 +225,22 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 							}
 						}
 
-						// Try to match with previous tool call ID
-						_ = functionResponse.Get("name").String() // functionName not used for now
-						if len(toolCallIDs) > 0 {
-							// Use the last tool call ID (simple matching by function name)
-							// In a real implementation, you might want more sophisticated matching
-							toolMsg, _ = sjson.Set(toolMsg, "tool_call_id", toolCallIDs[len(toolCallIDs)-1])
-						} else {
-							// Generate a tool call ID if none available
-							toolMsg, _ = sjson.Set(toolMsg, "tool_call_id", genToolCallID())
+						resolvedID, repaired, ambiguous, ok := tracker.ResolveResultID(
+							toolcall.ShortenName(functionResponse.Get("name").String(), 64),
+							functionResponse.Get("id").String(),
+						)
+						if !ok {
+							if ambiguous {
+								log.WithField("translator", "openai/gemini").Warn("toolcall: ambiguous functionResponse without resolvable tool_call_id")
+							} else {
+								log.WithField("translator", "openai/gemini").Warn("toolcall: functionResponse missing matching prior tool_call")
+							}
+							return true
 						}
-
+						if repaired {
+							log.WithField("translator", "openai/gemini").Debug("toolcall: repaired missing tool_call_id")
+						}
+						toolMsg, _ = sjson.Set(toolMsg, "tool_call_id", resolvedID)
 						out, _ = sjson.SetRaw(out, "messages.-1", toolMsg)
 					}
 
@@ -287,11 +276,9 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					openAITool, _ = sjson.Set(openAITool, "function.name", funcDecl.Get("name").String())
 					openAITool, _ = sjson.Set(openAITool, "function.description", funcDecl.Get("description").String())
 
-					// Convert parameters schema
-					if parameters := funcDecl.Get("parameters"); parameters.Exists() {
-						openAITool, _ = sjson.SetRaw(openAITool, "function.parameters", parameters.Raw)
-					} else if parameters := funcDecl.Get("parametersJsonSchema"); parameters.Exists() {
-						openAITool, _ = sjson.SetRaw(openAITool, "function.parameters", parameters.Raw)
+					schemaRaw := toolcall.PickToolSchema(funcDecl.Get("parameters").Raw, funcDecl.Get("parametersJsonSchema").Raw)
+					if strings.TrimSpace(schemaRaw) != "" {
+						openAITool, _ = sjson.SetRaw(openAITool, "function.parameters", schemaRaw)
 					}
 
 					out, _ = sjson.SetRaw(out, "tools.-1", openAITool)
@@ -305,14 +292,8 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	// Tool choice mapping (Gemini doesn't have direct equivalent, but we can handle it)
 	if toolConfig := root.Get("toolConfig"); toolConfig.Exists() {
 		if functionCallingConfig := toolConfig.Get("functionCallingConfig"); functionCallingConfig.Exists() {
-			mode := functionCallingConfig.Get("mode").String()
-			switch mode {
-			case "NONE":
-				out, _ = sjson.Set(out, "tool_choice", "none")
-			case "AUTO":
-				out, _ = sjson.Set(out, "tool_choice", "auto")
-			case "ANY":
-				out, _ = sjson.Set(out, "tool_choice", "required")
+			if choice, ok := toolcall.NormalizeToolChoiceFromGeminiMode(functionCallingConfig.Get("mode").String()); ok {
+				out, _ = sjson.Set(out, "tool_choice", choice)
 			}
 		}
 	}
