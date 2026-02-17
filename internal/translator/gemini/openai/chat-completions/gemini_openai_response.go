@@ -28,6 +28,12 @@ type convertGeminiResponseToOpenAIChatParams struct {
 // functionCallIDCounter provides a process-wide unique counter for function call identifiers.
 var functionCallIDCounter uint64
 
+const (
+	streamBaseTemplate         = `{"id":"","object":"chat.completion.chunk","created":12345,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}`
+	streamFunctionCallTemplate = `{"id": "","index": 0,"type": "function","function": {"name": "","arguments": ""}}`
+	streamImagesArrayPath      = "choices.0.delta.images"
+)
+
 // ConvertGeminiResponseToOpenAI translates a single chunk of a streaming response from the
 // Gemini API format to the OpenAI Chat Completions streaming format.
 // It processes various Gemini event types and transforms them into OpenAI-compatible JSON responses.
@@ -67,7 +73,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 
 	// Initialize the OpenAI SSE base template.
 	// We use a base template and clone it for each candidate to support multiple candidates.
-	baseTemplate := `{"id":"","object":"chat.completion.chunk","created":12345,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}]}`
+	baseTemplate := streamBaseTemplate
 
 	// Extract and set the model version.
 	if modelVersionResult := gjson.GetBytes(rawJSON, "modelVersion"); modelVersionResult.Exists() {
@@ -129,16 +135,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 			candidateIndex := int(candidate.Get("index").Int())
 			template, _ = sjson.Set(template, "choices.0.index", candidateIndex)
 
-			finishReason := ""
-			if stopReasonResult := gjson.GetBytes(rawJSON, "stop_reason"); stopReasonResult.Exists() {
-				finishReason = stopReasonResult.String()
-			}
-			if finishReason == "" {
-				if finishReasonResult := gjson.GetBytes(rawJSON, "candidates.0.finishReason"); finishReasonResult.Exists() {
-					finishReason = finishReasonResult.String()
-				}
-			}
-			finishReason = strings.ToLower(finishReason)
+			finishReason := getStreamingFinishReason(rawJSON)
 
 			partsResult := candidate.Get("content.parts")
 			hasFunctionCall := false
@@ -190,7 +187,7 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 							template, _ = sjson.SetRaw(template, "choices.0.delta.tool_calls", `[]`)
 						}
 
-						functionCallTemplate := `{"id": "","index": 0,"type": "function","function": {"name": "","arguments": ""}}`
+						functionCallTemplate := streamFunctionCallTemplate
 						fcName := functionCallResult.Get("name").String()
 						functionCallTemplate, _ = sjson.Set(functionCallTemplate, "id", fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&functionCallIDCounter, 1)))
 						functionCallTemplate, _ = sjson.Set(functionCallTemplate, "index", functionCallIndex)
@@ -213,11 +210,11 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 							mimeType = "image/png"
 						}
 						imageURL := fmt.Sprintf("data:%s;base64,%s", mimeType, data)
-						imagesResult := gjson.Get(template, "choices.0.delta.images")
+						imagesResult := gjson.Get(template, streamImagesArrayPath)
 						if !imagesResult.Exists() || !imagesResult.IsArray() {
-							template, _ = sjson.SetRaw(template, "choices.0.delta.images", `[]`)
+							template, _ = sjson.SetRaw(template, streamImagesArrayPath, `[]`)
 						}
-						imageIndex := len(gjson.Get(template, "choices.0.delta.images").Array())
+						imageIndex := len(gjson.Get(template, streamImagesArrayPath).Array())
 						imagePayload := `{"type":"image_url","image_url":{"url":""}}`
 						imagePayload, _ = sjson.Set(imagePayload, "index", imageIndex)
 						imagePayload, _ = sjson.Set(imagePayload, "image_url.url", imageURL)
@@ -249,6 +246,19 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 	}
 
 	return responseStrings
+}
+
+func getStreamingFinishReason(rawJSON []byte) string {
+	finishReason := ""
+	if stopReasonResult := gjson.GetBytes(rawJSON, "stop_reason"); stopReasonResult.Exists() {
+		finishReason = stopReasonResult.String()
+	}
+	if finishReason == "" {
+		if finishReasonResult := gjson.GetBytes(rawJSON, "candidates.0.finishReason"); finishReasonResult.Exists() {
+			finishReason = finishReasonResult.String()
+		}
+	}
+	return strings.ToLower(finishReason)
 }
 
 // ConvertGeminiResponseToOpenAINonStream converts a non-streaming Gemini response to a non-streaming OpenAI response.

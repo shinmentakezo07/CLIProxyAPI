@@ -308,33 +308,35 @@ func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat stri
 	return config
 }
 
+var providerThinkingExtractors = map[string]func([]byte) ThinkingConfig{
+	"claude":      extractClaudeConfig,
+	"gemini":      func(body []byte) ThinkingConfig { return extractGeminiConfig(body, "gemini") },
+	"gemini-cli":  func(body []byte) ThinkingConfig { return extractGeminiConfig(body, "gemini-cli") },
+	"antigravity": func(body []byte) ThinkingConfig { return extractGeminiConfig(body, "antigravity") },
+	"openai":      extractOpenAIConfig,
+	"codex":       extractCodexConfig,
+	"kimi":        extractOpenAIConfig, // Kimi uses OpenAI-compatible reasoning_effort format.
+}
+
 // extractThinkingConfig extracts provider-specific thinking config from request body.
 func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return ThinkingConfig{}
 	}
 
-	switch provider {
-	case "claude":
-		return extractClaudeConfig(body)
-	case "gemini", "gemini-cli", "antigravity":
-		return extractGeminiConfig(body, provider)
-	case "openai":
-		return extractOpenAIConfig(body)
-	case "codex":
-		return extractCodexConfig(body)
-	case "iflow":
+	if provider == "iflow" {
 		config := extractIFlowConfig(body)
 		if hasThinkingConfig(config) {
 			return config
 		}
 		return extractOpenAIConfig(body)
-	case "kimi":
-		// Kimi uses OpenAI-compatible reasoning_effort format
-		return extractOpenAIConfig(body)
-	default:
+	}
+
+	extractor, ok := providerThinkingExtractors[provider]
+	if !ok {
 		return ThinkingConfig{}
 	}
+	return extractor(body)
 }
 
 func hasThinkingConfig(config ThinkingConfig) bool {
