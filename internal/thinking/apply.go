@@ -157,6 +157,8 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 		}
 	}
 
+	config = applyAutoTriggerConfig(body, config, suffixResult.HasSuffix, modelInfo, providerFormat)
+
 	if !hasThinkingConfig(config) {
 		log.WithFields(log.Fields{
 			"provider": providerFormat,
