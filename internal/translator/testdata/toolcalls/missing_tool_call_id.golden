@@ -1,0 +1,1 @@
+{"model":"gpt-5","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"tc_gemini_1","type":"function","function":{"name":"toolA","arguments":"{\"x\":1}"}}]},{"role":"tool","tool_call_id":"tc_gemini_1","content":"{\"ok\":true}"},{"role":"user","content":""}],"stream":false}

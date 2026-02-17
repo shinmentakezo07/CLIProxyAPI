@@ -87,23 +87,33 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
-	originalPayloadSource := req.Payload
+	originalPayload := req.Payload
 	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
+		originalPayload = opts.OriginalRequest
 	}
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), "iflow", e.Identifier())
+	requestedModel := payloadRequestedModel(opts, req.Model)
+	body, _, err := buildTranslatedPayload(translatedPayloadOptions{
+		cfg:             e.cfg,
+		baseModel:       baseModel,
+		reqModel:        req.Model,
+		providerKey:     e.Identifier(),
+		from:            from.String(),
+		to:              to.String(),
+		root:            "",
+		payload:         req.Payload,
+		originalPayload: originalPayload,
+		requestedModel:  requestedModel,
+		stream:          false,
+		applyThinking:   true,
+		thinkingBefore:  true,
+		beforePayload: func(payload []byte) []byte {
+			payload, _ = sjson.SetBytes(payload, "model", baseModel)
+			return preserveReasoningContentInMessages(payload)
+		},
+	})
 	if err != nil {
 		return resp, err
 	}
-
-	body = preserveReasoningContentInMessages(body)
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 
 	endpoint := strings.TrimSuffix(baseURL, "/") + iflowDefaultEndpoint
 
@@ -181,28 +191,38 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
-	originalPayloadSource := req.Payload
+	originalPayload := req.Payload
 	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
+		originalPayload = opts.OriginalRequest
 	}
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), "iflow", e.Identifier())
+	requestedModel := payloadRequestedModel(opts, req.Model)
+	body, _, err := buildTranslatedPayload(translatedPayloadOptions{
+		cfg:             e.cfg,
+		baseModel:       baseModel,
+		reqModel:        req.Model,
+		providerKey:     e.Identifier(),
+		from:            from.String(),
+		to:              to.String(),
+		root:            "",
+		payload:         req.Payload,
+		originalPayload: originalPayload,
+		requestedModel:  requestedModel,
+		stream:          true,
+		applyThinking:   true,
+		thinkingBefore:  true,
+		beforePayload: func(payload []byte) []byte {
+			payload, _ = sjson.SetBytes(payload, "model", baseModel)
+			payload = preserveReasoningContentInMessages(payload)
+			toolsResult := gjson.GetBytes(payload, "tools")
+			if toolsResult.Exists() && toolsResult.IsArray() && len(toolsResult.Array()) == 0 {
+				payload = ensureToolsArray(payload)
+			}
+			return payload
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	body = preserveReasoningContentInMessages(body)
-	// Ensure tools array exists to avoid provider quirks similar to Qwen's behaviour.
-	toolsResult := gjson.GetBytes(body, "tools")
-	if toolsResult.Exists() && toolsResult.IsArray() && len(toolsResult.Array()) == 0 {
-		body = ensureToolsArray(body)
-	}
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 
 	endpoint := strings.TrimSuffix(baseURL, "/") + iflowDefaultEndpoint
 

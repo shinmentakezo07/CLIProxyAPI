@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -28,6 +31,42 @@ func TestHandleNon2xxResponse(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"bad"}`))}
 	if err := handleNon2xxResponse(context.Background(), nil, resp); err == nil {
 		t.Fatal("expected status error")
+	}
+}
+
+func TestBuildTranslatedPayload_BeforeAfterHooks(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+	out, original, err := buildTranslatedPayload(translatedPayloadOptions{
+		cfg:             nil,
+		baseModel:       "gpt-5",
+		reqModel:        "gpt-5",
+		providerKey:     "openai",
+		from:            "openai",
+		to:              "openai",
+		root:            "",
+		payload:         payload,
+		originalPayload: payload,
+		requestedModel:  "gpt-5",
+		stream:          false,
+		applyThinking:   false,
+		thinkingBefore:  false,
+		beforePayload: func(body []byte) []byte {
+			updated, _ := sjson.SetBytes(body, "metadata.before", true)
+			return updated
+		},
+		afterPayload: func(body []byte) []byte {
+			updated, _ := sjson.SetBytes(body, "metadata.after", true)
+			return updated
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildTranslatedPayload error: %v", err)
+	}
+	if len(original) == 0 {
+		t.Fatal("expected original translated payload")
+	}
+	if !gjson.GetBytes(out, "metadata.before").Bool() || !gjson.GetBytes(out, "metadata.after").Bool() {
+		t.Fatalf("expected before/after hooks to run: %s", string(out))
 	}
 }
 

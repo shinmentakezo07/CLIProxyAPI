@@ -84,22 +84,34 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		to = sdktranslator.FromString("openai-response")
 		endpoint = "/responses/compact"
 	}
-	originalPayloadSource := req.Payload
+	originalPayload := req.Payload
 	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
+		originalPayload = opts.OriginalRequest
 	}
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
-	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
 	requestedModel := payloadRequestedModel(opts, req.Model)
-	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
-	if opts.Alt == "responses/compact" {
-		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
-			translated = updated
-		}
-	}
-
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	translated, _, err := buildTranslatedPayload(translatedPayloadOptions{
+		cfg:             e.cfg,
+		baseModel:       baseModel,
+		reqModel:        req.Model,
+		providerKey:     e.Identifier(),
+		from:            from.String(),
+		to:              to.String(),
+		root:            "",
+		payload:         req.Payload,
+		originalPayload: originalPayload,
+		requestedModel:  requestedModel,
+		stream:          opts.Stream,
+		applyThinking:   true,
+		thinkingBefore:  false,
+		afterPayload: func(payload []byte) []byte {
+			if opts.Alt == "responses/compact" {
+				if updated, errDelete := sjson.DeleteBytes(payload, "stream"); errDelete == nil {
+					return updated
+				}
+			}
+			return payload
+		},
+	})
 	if err != nil {
 		return resp, err
 	}
@@ -177,17 +189,26 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
-	originalPayloadSource := req.Payload
+	originalPayload := req.Payload
 	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
+		originalPayload = opts.OriginalRequest
 	}
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
-	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 	requestedModel := payloadRequestedModel(opts, req.Model)
-	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
-
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	translated, _, err := buildTranslatedPayload(translatedPayloadOptions{
+		cfg:             e.cfg,
+		baseModel:       baseModel,
+		reqModel:        req.Model,
+		providerKey:     e.Identifier(),
+		from:            from.String(),
+		to:              to.String(),
+		root:            "",
+		payload:         req.Payload,
+		originalPayload: originalPayload,
+		requestedModel:  requestedModel,
+		stream:          true,
+		applyThinking:   true,
+		thinkingBefore:  false,
+	})
 	if err != nil {
 		return nil, err
 	}
