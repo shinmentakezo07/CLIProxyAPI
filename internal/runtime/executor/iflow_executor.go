@@ -56,18 +56,14 @@ func (e *IFlowExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
 
 // HttpRequest injects iFlow credentials into the request and executes it.
 func (e *IFlowExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
-	if req == nil {
-		return nil, fmt.Errorf("iflow executor: request is nil")
-	}
-	if ctx == nil {
-		ctx = req.Context()
-	}
-	httpReq := req.WithContext(ctx)
-	if err := e.PrepareRequest(httpReq, auth); err != nil {
+	resp, err := executeWithPreparedRequest(ctx, e.cfg, auth, req, e.PrepareRequest)
+	if err != nil {
+		if req == nil {
+			return nil, fmt.Errorf("iflow executor: request is nil")
+		}
 		return nil, err
 	}
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	return httpClient.Do(httpReq)
+	return resp, nil
 }
 
 // Execute performs a non-streaming chat completion request.
@@ -91,23 +87,33 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
-	originalPayloadSource := req.Payload
+	originalPayload := req.Payload
 	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
+		originalPayload = opts.OriginalRequest
 	}
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), "iflow", e.Identifier())
+	requestedModel := payloadRequestedModel(opts, req.Model)
+	body, _, err := buildTranslatedPayload(translatedPayloadOptions{
+		cfg:             e.cfg,
+		baseModel:       baseModel,
+		reqModel:        req.Model,
+		providerKey:     e.Identifier(),
+		from:            from.String(),
+		to:              to.String(),
+		root:            "",
+		payload:         req.Payload,
+		originalPayload: originalPayload,
+		requestedModel:  requestedModel,
+		stream:          false,
+		applyThinking:   true,
+		thinkingBefore:  true,
+		beforePayload: func(payload []byte) []byte {
+			payload, _ = sjson.SetBytes(payload, "model", baseModel)
+			return preserveReasoningContentInMessages(payload)
+		},
+	})
 	if err != nil {
 		return resp, err
 	}
-
-	body = preserveReasoningContentInMessages(body)
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 
 	endpoint := strings.TrimSuffix(baseURL, "/") + iflowDefaultEndpoint
 
@@ -116,12 +122,7 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	applyIFlowHeaders(httpReq, apiKey, false)
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
+	authID, authLabel, authType, authValue := authLogFields(auth)
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       endpoint,
 		Method:    http.MethodPost,
@@ -134,8 +135,7 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		AuthValue: authValue,
 	})
 
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := executeWithPreparedRequest(ctx, e.cfg, auth, httpReq, nil)
 	if err != nil {
 		recordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
@@ -147,11 +147,8 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}()
 	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		appendAPIResponseChunk(ctx, e.cfg, b)
-		logWithRequestID(ctx).Debugf("request error, error status: %d error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+	if errStatus := handleNon2xxResponse(ctx, e.cfg, httpResp); errStatus != nil {
+		err = errStatus
 		return resp, err
 	}
 
@@ -194,28 +191,38 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
-	originalPayloadSource := req.Payload
+	originalPayload := req.Payload
 	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
+		originalPayload = opts.OriginalRequest
 	}
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), "iflow", e.Identifier())
+	requestedModel := payloadRequestedModel(opts, req.Model)
+	body, _, err := buildTranslatedPayload(translatedPayloadOptions{
+		cfg:             e.cfg,
+		baseModel:       baseModel,
+		reqModel:        req.Model,
+		providerKey:     e.Identifier(),
+		from:            from.String(),
+		to:              to.String(),
+		root:            "",
+		payload:         req.Payload,
+		originalPayload: originalPayload,
+		requestedModel:  requestedModel,
+		stream:          true,
+		applyThinking:   true,
+		thinkingBefore:  true,
+		beforePayload: func(payload []byte) []byte {
+			payload, _ = sjson.SetBytes(payload, "model", baseModel)
+			payload = preserveReasoningContentInMessages(payload)
+			toolsResult := gjson.GetBytes(payload, "tools")
+			if toolsResult.Exists() && toolsResult.IsArray() && len(toolsResult.Array()) == 0 {
+				payload = ensureToolsArray(payload)
+			}
+			return payload
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	body = preserveReasoningContentInMessages(body)
-	// Ensure tools array exists to avoid provider quirks similar to Qwen's behaviour.
-	toolsResult := gjson.GetBytes(body, "tools")
-	if toolsResult.Exists() && toolsResult.IsArray() && len(toolsResult.Array()) == 0 {
-		body = ensureToolsArray(body)
-	}
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 
 	endpoint := strings.TrimSuffix(baseURL, "/") + iflowDefaultEndpoint
 
@@ -224,12 +231,7 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	applyIFlowHeaders(httpReq, apiKey, true)
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
+	authID, authLabel, authType, authValue := authLogFields(auth)
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       endpoint,
 		Method:    http.MethodPost,
@@ -242,22 +244,18 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		AuthValue: authValue,
 	})
 
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := executeWithPreparedRequest(ctx, e.cfg, auth, httpReq, nil)
 	if err != nil {
 		recordAPIResponseError(ctx, e.cfg, err)
 		return nil, err
 	}
 
 	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		data, _ := io.ReadAll(httpResp.Body)
+	if errStatus := handleNon2xxResponse(ctx, e.cfg, httpResp); errStatus != nil {
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("iflow executor: close response body error: %v", errClose)
 		}
-		appendAPIResponseChunk(ctx, e.cfg, data)
-		logWithRequestID(ctx).Debugf("request error, error status: %d error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
+		err = errStatus
 		return nil, err
 	}
 
