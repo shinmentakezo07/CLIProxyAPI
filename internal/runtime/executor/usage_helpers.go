@@ -17,6 +17,22 @@ import (
 
 type usageDetail = usage.Detail
 
+type statusErr struct {
+	code int
+	msg  string
+}
+
+func (e statusErr) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	return fmt.Sprintf("status code %d", e.code)
+}
+
+func (e statusErr) StatusCode() int {
+	return e.code
+}
+
 type usageReporter struct {
 	provider    string
 	model       string
