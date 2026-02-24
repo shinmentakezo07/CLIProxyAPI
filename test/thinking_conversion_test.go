@@ -2714,6 +2714,39 @@ func TestThinkingE2EClaudeAdaptive_Body(t *testing.T) {
 			expectField: "",
 			expectErr:   false,
 		},
+		// A11: Codex fixed alias -high -> force high reasoning.effort on gpt-5.3-codex
+		{
+			name:        "A11",
+			from:        "openai",
+			to:          "codex",
+			model:       "gpt-5.3-codex-high",
+			inputJSON:   `{"model":"gpt-5.3-codex-high","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning.effort",
+			expectValue: "high",
+			expectErr:   false,
+		},
+		// A12: Codex fixed alias -medium -> force medium reasoning.effort on gpt-5.3-codex
+		{
+			name:        "A12",
+			from:        "openai",
+			to:          "codex",
+			model:       "gpt-5.3-codex-medium",
+			inputJSON:   `{"model":"gpt-5.3-codex-medium","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning.effort",
+			expectValue: "medium",
+			expectErr:   false,
+		},
+		// A13: Codex fixed alias -xhigh -> force xhigh reasoning.effort on gpt-5.3-codex
+		{
+			name:        "A13",
+			from:        "openai",
+			to:          "codex",
+			model:       "gpt-5.3-codex-xhigh",
+			inputJSON:   `{"model":"gpt-5.3-codex-xhigh","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning.effort",
+			expectValue: "xhigh",
+			expectErr:   false,
+		},
 	}
 
 	runThinkingTests(t, cases)
@@ -2812,6 +2845,15 @@ func getTestModels() []*registry.ModelInfo {
 			Type:        "iflow",
 			DisplayName: "MiniMax Test Model",
 			Thinking:    &registry.ThinkingSupport{Levels: []string{"none", "auto", "minimal", "low", "medium", "high", "xhigh"}},
+		},
+		{
+			ID:          "gpt-5.3-codex",
+			Object:      "model",
+			Created:     1700000000,
+			OwnedBy:     "test",
+			Type:        "openai",
+			DisplayName: "GPT 5.3 Codex",
+			Thinking:    &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
 		},
 	}
 }

@@ -9,6 +9,22 @@ import (
 	"strings"
 )
 
+const fixedThinkingLevelAliasBase = "gpt-5.3-codex"
+
+var fixedThinkingLevelAliases = map[string]ThinkingLevel{
+	"gpt-5.3-codex-medium": LevelMedium,
+	"gpt-5.3-codex-high":   LevelHigh,
+	"gpt-5.3-codex-xhigh":  LevelXHigh,
+}
+
+func resolveFixedThinkingLevelAlias(model string) (baseModel, level string, ok bool) {
+	levelValue, exists := fixedThinkingLevelAliases[strings.ToLower(strings.TrimSpace(model))]
+	if !exists {
+		return "", "", false
+	}
+	return fixedThinkingLevelAliasBase, string(levelValue), true
+}
+
 // ParseSuffix extracts thinking suffix from a model name.
 //
 // The suffix format is: model-name(value)
@@ -21,6 +37,10 @@ import (
 // the suffix content. Use ParseNumericSuffix, ParseLevelSuffix, etc. for
 // content interpretation.
 func ParseSuffix(model string) SuffixResult {
+	if baseModel, level, ok := resolveFixedThinkingLevelAlias(model); ok {
+		return SuffixResult{ModelName: baseModel, HasSuffix: true, RawSuffix: level}
+	}
+
 	// Find the last opening parenthesis
 	lastOpen := strings.LastIndex(model, "(")
 	if lastOpen == -1 {
