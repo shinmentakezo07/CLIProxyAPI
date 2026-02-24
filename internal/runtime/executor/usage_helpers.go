@@ -15,6 +15,8 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+type usageDetail = usage.Detail
+
 type usageReporter struct {
 	provider    string
 	model       string
