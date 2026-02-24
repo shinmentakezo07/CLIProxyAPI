@@ -881,9 +881,9 @@ func (e *AntigravityExecutorRefactored) CountTokens(ctx context.Context, auth *c
 		return cliproxyexecutor.Response{}, err
 	}
 
-	payload = deleteJSONField(payload, "project")
-	payload = deleteJSONField(payload, "model")
-	payload = deleteJSONField(payload, "request.safetySettings")
+	payload, _ = sjson.DeleteBytes(payload, "project")
+	payload, _ = sjson.DeleteBytes(payload, "model")
+	payload, _ = sjson.DeleteBytes(payload, "request.safetySettings")
 
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)

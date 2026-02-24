@@ -18,8 +18,9 @@ import (
 type usageDetail = usage.Detail
 
 type statusErr struct {
-	code int
-	msg  string
+	code       int
+	msg        string
+	retryAfter *time.Duration
 }
 
 func (e statusErr) Error() string {
@@ -31,6 +32,14 @@ func (e statusErr) Error() string {
 
 func (e statusErr) StatusCode() int {
 	return e.code
+}
+
+func (e statusErr) RetryAfter() *time.Duration {
+	if e.retryAfter == nil {
+		return nil
+	}
+	d := *e.retryAfter
+	return &d
 }
 
 type usageReporter struct {
