@@ -42,7 +42,7 @@ func (p *GeminiVertexProvider) GetCredentials(auth *cliproxyauth.Auth) (apiKey, 
 	}
 
 	// Fall back to service account - return empty apiKey to signal service account auth
-	projectID, location, _, err := vertexCreds(auth)
+	_, location, _, err := vertexCreds(auth)
 	if err != nil {
 		return "", ""
 	}
