@@ -76,6 +76,10 @@ func (p *CodexProvider) ApplyHeaders(req *http.Request, auth *cliproxyauth.Auth,
 	misc.EnsureHeader(req.Header, ginHeaders, "Version", codexClientVersion)
 	misc.EnsureHeader(req.Header, ginHeaders, "Session_id", uuid.NewString())
 	misc.EnsureHeader(req.Header, ginHeaders, "User-Agent", codexUserAgent)
+	misc.EnsureHeader(req.Header, ginHeaders, "x-codex-beta-features", "")
+	misc.EnsureHeader(req.Header, ginHeaders, "x-codex-turn-state", "")
+	misc.EnsureHeader(req.Header, ginHeaders, "x-codex-turn-metadata", "")
+	misc.EnsureHeader(req.Header, ginHeaders, "x-responsesapi-include-timing-metrics", "")
 
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
@@ -128,6 +132,14 @@ func normalizeCodexRequestBody(body []byte, model string, stream bool) ([]byte, 
 
 	// Set stream flag
 	body, _ = sjson.SetBytes(body, "stream", stream)
+
+	// Accept OpenAI-style alias and normalize it to Codex/Responses format.
+	if !gjson.GetBytes(body, "reasoning.effort").Exists() {
+		if effort := strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String()); effort != "" {
+			body, _ = sjson.SetBytes(body, "reasoning.effort", effort)
+		}
+	}
+	body, _ = sjson.DeleteBytes(body, "reasoning_effort")
 
 	// Delete Codex-specific fields that shouldn't be sent
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")

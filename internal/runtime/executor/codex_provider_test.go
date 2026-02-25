@@ -1,8 +1,12 @@
 package executor
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
@@ -31,6 +35,53 @@ func TestNormalizeCodexRequestBody(t *testing.T) {
 	}
 	if gjson.GetBytes(got, "safety_identifier").Exists() {
 		t.Fatalf("expected safety_identifier to be removed")
+	}
+}
+
+func TestNormalizeCodexRequestBody_MapsReasoningEffortAlias(t *testing.T) {
+	input := []byte(`{"reasoning_effort":"high"}`)
+
+	got, err := normalizeCodexRequestBody(input, "gpt-5", true)
+	if err != nil {
+		t.Fatalf("normalizeCodexRequestBody returned error: %v", err)
+	}
+
+	if gotEffort := gjson.GetBytes(got, "reasoning.effort").String(); gotEffort != "high" {
+		t.Fatalf("reasoning.effort = %q, want %q", gotEffort, "high")
+	}
+	if gjson.GetBytes(got, "reasoning_effort").Exists() {
+		t.Fatalf("expected reasoning_effort alias to be removed")
+	}
+}
+
+func TestCodexProviderApplyHeaders_ForwardsCodexHintHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	c.Request.Header.Set("x-codex-turn-state", "turn-state")
+	c.Request.Header.Set("x-codex-turn-metadata", "turn-meta")
+	c.Request.Header.Set("x-responsesapi-include-timing-metrics", "1")
+
+	req, err := http.NewRequestWithContext(contextWithGinForTest(c), http.MethodPost, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	p := NewCodexProvider(nil)
+	p.ApplyHeaders(req, nil, "token", true)
+
+	if got := req.Header.Get("x-codex-turn-state"); got != "turn-state" {
+		t.Fatalf("x-codex-turn-state = %q, want %q", got, "turn-state")
+	}
+	if got := req.Header.Get("x-codex-turn-metadata"); got != "turn-meta" {
+		t.Fatalf("x-codex-turn-metadata = %q, want %q", got, "turn-meta")
+	}
+	if got := req.Header.Get("x-responsesapi-include-timing-metrics"); got != "1" {
+		t.Fatalf("x-responsesapi-include-timing-metrics = %q, want %q", got, "1")
+	}
+	if got := req.Header.Get("Accept"); got != "text/event-stream" {
+		t.Fatalf("Accept = %q, want %q", got, "text/event-stream")
 	}
 }
 
@@ -68,4 +119,11 @@ func TestCodexCompletedEventPayload(t *testing.T) {
 			}
 		})
 	}
+}
+
+func contextWithGinForTest(c *gin.Context) context.Context {
+	if c == nil {
+		return context.Background()
+	}
+	return context.WithValue(context.Background(), "gin", c)
 }

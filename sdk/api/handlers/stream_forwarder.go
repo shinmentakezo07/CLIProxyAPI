@@ -29,6 +29,14 @@ type StreamForwardOptions struct {
 	WriteKeepAlive func()
 }
 
+type resolvedStreamForwardOptions struct {
+	keepAliveInterval   time.Duration
+	writeChunk          func([]byte)
+	writeTerminalError  func(*interfaces.ErrorMessage)
+	writeDone           func()
+	writeKeepAlive      func()
+}
+
 func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, opts StreamForwardOptions) {
 	if c == nil {
 		return
@@ -37,30 +45,13 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 		return
 	}
 
-	writeChunk := opts.WriteChunk
-	if writeChunk == nil {
-		writeChunk = func([]byte) {}
-	}
-
-	writeKeepAlive := opts.WriteKeepAlive
-	if writeKeepAlive == nil {
-		writeKeepAlive = func() {
-			_, _ = c.Writer.Write([]byte(": keep-alive\n\n"))
-		}
-	}
-
-	keepAliveInterval := StreamingKeepAliveInterval(h.Cfg)
-	if opts.KeepAliveInterval != nil {
-		keepAliveInterval = *opts.KeepAliveInterval
-	}
-	var keepAlive *time.Ticker
-	var keepAliveC <-chan time.Time
-	if keepAliveInterval > 0 {
-		keepAlive = time.NewTicker(keepAliveInterval)
+	resolved := h.resolveStreamForwardOptions(c, opts)
+	keepAlive, keepAliveC := startStreamKeepAliveTicker(resolved.keepAliveInterval)
+	if keepAlive != nil {
 		defer keepAlive.Stop()
-		keepAliveC = keepAlive.C
 	}
 
+	errCh := errs
 	var terminalErr *interfaces.ErrorMessage
 	for {
 		select {
@@ -71,39 +62,23 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 			if !ok {
 				// Prefer surfacing a terminal error if one is pending.
 				if terminalErr == nil {
-					select {
-					case errMsg, ok := <-errs:
-						if ok && errMsg != nil {
-							terminalErr = errMsg
-						}
-					default:
-					}
+					terminalErr = drainPendingStreamTerminalError(errCh)
 				}
-				if terminalErr != nil {
-					if opts.WriteTerminalError != nil {
-						opts.WriteTerminalError(terminalErr)
-					}
-					flusher.Flush()
-					cancel(terminalErr.Error)
-					return
-				}
-				if opts.WriteDone != nil {
-					opts.WriteDone()
-				}
-				flusher.Flush()
-				cancel(nil)
+				finishForwardStream(flusher, cancel, terminalErr, resolved)
 				return
 			}
-			writeChunk(chunk)
+			resolved.writeChunk(chunk)
 			flusher.Flush()
-		case errMsg, ok := <-errs:
+		case errMsg, ok := <-errCh:
 			if !ok {
+				// Disable the closed case to avoid a hot select loop while data is still streaming.
+				errCh = nil
 				continue
 			}
 			if errMsg != nil {
 				terminalErr = errMsg
-				if opts.WriteTerminalError != nil {
-					opts.WriteTerminalError(errMsg)
+				if resolved.writeTerminalError != nil {
+					resolved.writeTerminalError(errMsg)
 					flusher.Flush()
 				}
 			}
@@ -114,8 +89,68 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 			cancel(execErr)
 			return
 		case <-keepAliveC:
-			writeKeepAlive()
+			resolved.writeKeepAlive()
 			flusher.Flush()
 		}
 	}
+}
+
+func (h *BaseAPIHandler) resolveStreamForwardOptions(c *gin.Context, opts StreamForwardOptions) resolvedStreamForwardOptions {
+	resolved := resolvedStreamForwardOptions{
+		writeChunk:         opts.WriteChunk,
+		writeTerminalError: opts.WriteTerminalError,
+		writeDone:          opts.WriteDone,
+		writeKeepAlive:     opts.WriteKeepAlive,
+		keepAliveInterval:  StreamingKeepAliveInterval(h.Cfg),
+	}
+	if resolved.writeChunk == nil {
+		resolved.writeChunk = func([]byte) {}
+	}
+	if resolved.writeKeepAlive == nil {
+		resolved.writeKeepAlive = func() {
+			_, _ = c.Writer.Write([]byte(": keep-alive\n\n"))
+		}
+	}
+	if opts.KeepAliveInterval != nil {
+		resolved.keepAliveInterval = *opts.KeepAliveInterval
+	}
+	return resolved
+}
+
+func startStreamKeepAliveTicker(interval time.Duration) (*time.Ticker, <-chan time.Time) {
+	if interval <= 0 {
+		return nil, nil
+	}
+	ticker := time.NewTicker(interval)
+	return ticker, ticker.C
+}
+
+func drainPendingStreamTerminalError(errs <-chan *interfaces.ErrorMessage) *interfaces.ErrorMessage {
+	if errs == nil {
+		return nil
+	}
+	select {
+	case errMsg, ok := <-errs:
+		if ok && errMsg != nil {
+			return errMsg
+		}
+	default:
+	}
+	return nil
+}
+
+func finishForwardStream(flusher http.Flusher, cancel func(error), terminalErr *interfaces.ErrorMessage, opts resolvedStreamForwardOptions) {
+	if terminalErr != nil {
+		if opts.writeTerminalError != nil {
+			opts.writeTerminalError(terminalErr)
+		}
+		flusher.Flush()
+		cancel(terminalErr.Error)
+		return
+	}
+	if opts.writeDone != nil {
+		opts.writeDone()
+	}
+	flusher.Flush()
+	cancel(nil)
 }
