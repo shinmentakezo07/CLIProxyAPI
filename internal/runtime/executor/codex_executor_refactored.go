@@ -111,13 +111,9 @@ func (e *CodexExecutorRefactored) executeViaStream(ctx context.Context, auth *cl
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-	body, _ = sjson.SetBytes(body, "stream", true)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
+	body, err = normalizeCodexRequestBody(body, baseModel, true)
+	if err != nil {
+		return resp, err
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
@@ -223,7 +219,10 @@ func (e *CodexExecutorRefactored) executeCompact(ctx context.Context, auth *clip
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body, err = normalizeCodexRequestBody(body, baseModel, false)
+	if err != nil {
+		return resp, err
+	}
 	body, _ = sjson.DeleteBytes(body, "stream")
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
@@ -306,13 +305,9 @@ func (e *CodexExecutorRefactored) CountTokens(ctx context.Context, auth *cliprox
 		return cliproxyexecutor.Response{}, err
 	}
 
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	body, _ = sjson.SetBytes(body, "stream", false)
-	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
+	body, err = normalizeCodexRequestBody(body, baseModel, false)
+	if err != nil {
+		return cliproxyexecutor.Response{}, err
 	}
 
 	enc, err := tokenizerForCodexModel(baseModel)

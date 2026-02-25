@@ -114,6 +114,10 @@ func (p *CodexProvider) GetTranslatorFormat() string {
 }
 
 func (p *CodexProvider) TransformRequestBody(body []byte, model string, stream bool) ([]byte, error) {
+	return normalizeCodexRequestBody(body, model, stream)
+}
+
+func normalizeCodexRequestBody(body []byte, model string, stream bool) ([]byte, error) {
 	var err error
 
 	// Set model in payload
@@ -145,13 +149,21 @@ func (p *CodexProvider) TransformResponseBody(body []byte) []byte {
 
 func (p *CodexProvider) ParseUsage(data []byte, stream bool) usageDetail {
 	// For Codex, usage is in response.completed events
-	if bytes.HasPrefix(data, dataTag) {
-		payload := bytes.TrimSpace(data[5:])
-		if gjson.GetBytes(payload, "type").String() == "response.completed" {
-			if detail, ok := parseCodexUsage(payload); ok {
-				return detail
-			}
+	if payload, ok := codexCompletedEventPayload(data); ok {
+		if detail, ok := parseCodexUsage(payload); ok {
+			return detail
 		}
 	}
 	return usageDetail{}
+}
+
+func codexCompletedEventPayload(data []byte) ([]byte, bool) {
+	if !bytes.HasPrefix(data, dataTag) {
+		return nil, false
+	}
+	payload := bytes.TrimSpace(data[len(dataTag):])
+	if gjson.GetBytes(payload, "type").String() != "response.completed" {
+		return nil, false
+	}
+	return payload, true
 }
