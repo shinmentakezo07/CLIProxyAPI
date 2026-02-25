@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -13,7 +12,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -156,39 +154,4 @@ func (p *CodexProvider) ParseUsage(data []byte, stream bool) usageDetail {
 		}
 	}
 	return usageDetail{}
-}
-
-// applyCacheHeaders applies cache-related headers to the request
-func applyCacheHeaders(req *http.Request, cacheID string) {
-	if cacheID != "" {
-		req.Header.Set("Conversation_id", cacheID)
-		req.Header.Set("Session_id", cacheID)
-	}
-}
-
-// extractCacheID extracts cache ID from request based on source format
-func extractCacheID(from sdktranslator.Format, reqPayload []byte, model string) string {
-	var cache codexCache
-
-	if from == sdktranslator.FromString("claude") {
-		userIDResult := gjson.GetBytes(reqPayload, "metadata.user_id")
-		if userIDResult.Exists() {
-			key := fmt.Sprintf("%s-%s", model, userIDResult.String())
-			var ok bool
-			if cache, ok = getCodexCache(key); !ok {
-				cache = codexCache{
-					ID:     uuid.New().String(),
-					Expire: time.Now().Add(1 * time.Hour),
-				}
-				setCodexCache(key, cache)
-			}
-		}
-	} else if from == sdktranslator.FromString("openai-response") {
-		promptCacheKey := gjson.GetBytes(reqPayload, "prompt_cache_key")
-		if promptCacheKey.Exists() {
-			cache.ID = promptCacheKey.String()
-		}
-	}
-
-	return cache.ID
 }

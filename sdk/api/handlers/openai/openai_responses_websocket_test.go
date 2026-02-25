@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 )
 
@@ -130,6 +131,71 @@ func TestNormalizeResponsesWebsocketRequestWithPreviousResponseIDMergedWhenIncre
 	if !bytes.Equal(next, normalized) {
 		t.Fatalf("next request snapshot should match normalized request")
 	}
+}
+
+func TestNormalizeResponsesWebsocketRequestWithPreviousResponseIDModeFromAuthHelper(t *testing.T) {
+	lastRequest := []byte(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1"}]}`)
+	lastResponseOutput := []byte(`[
+		{"type":"function_call","id":"fc-1","call_id":"call-1"},
+		{"type":"message","id":"assistant-1"}
+	]`)
+	raw := []byte(`{"type":"response.create","previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","id":"tool-out-1"}]}`)
+
+	t.Run("enabled via attributes string", func(t *testing.T) {
+		allowIncremental := coreauth.WebsocketIncrementalEnabled(map[string]string{"websockets": "true"}, nil)
+		if !allowIncremental {
+			t.Fatalf("precondition failed: expected incremental mode enabled")
+		}
+
+		normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, allowIncremental)
+		if errMsg != nil {
+			t.Fatalf("unexpected error: %v", errMsg.Error)
+		}
+		if gjson.GetBytes(normalized, "previous_response_id").String() != "resp-1" {
+			t.Fatalf("previous_response_id must be preserved when incremental mode is enabled")
+		}
+		input := gjson.GetBytes(normalized, "input").Array()
+		if len(input) != 1 {
+			t.Fatalf("incremental input len = %d, want 1", len(input))
+		}
+	})
+
+	t.Run("disabled via metadata bool", func(t *testing.T) {
+		allowIncremental := coreauth.WebsocketIncrementalEnabled(nil, map[string]any{"websockets": false})
+		if allowIncremental {
+			t.Fatalf("precondition failed: expected incremental mode disabled")
+		}
+
+		normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, allowIncremental)
+		if errMsg != nil {
+			t.Fatalf("unexpected error: %v", errMsg.Error)
+		}
+		if gjson.GetBytes(normalized, "previous_response_id").Exists() {
+			t.Fatalf("previous_response_id must be removed when incremental mode is disabled")
+		}
+		input := gjson.GetBytes(normalized, "input").Array()
+		if len(input) != 4 {
+			t.Fatalf("merged input len = %d, want 4", len(input))
+		}
+	})
+
+	t.Run("invalid attributes fallback to metadata enabled", func(t *testing.T) {
+		allowIncremental := coreauth.WebsocketIncrementalEnabled(
+			map[string]string{"websockets": "invalid"},
+			map[string]any{"websockets": " true "},
+		)
+		if !allowIncremental {
+			t.Fatalf("precondition failed: expected fallback to metadata to enable incremental mode")
+		}
+
+		normalized, _, errMsg := normalizeResponsesWebsocketRequestWithMode(raw, lastRequest, lastResponseOutput, allowIncremental)
+		if errMsg != nil {
+			t.Fatalf("unexpected error: %v", errMsg.Error)
+		}
+		if gjson.GetBytes(normalized, "previous_response_id").String() != "resp-1" {
+			t.Fatalf("previous_response_id must be preserved when fallback enables incremental mode")
+		}
+	})
 }
 
 func TestNormalizeResponsesWebsocketRequestAppend(t *testing.T) {

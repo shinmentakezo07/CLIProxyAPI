@@ -369,21 +369,19 @@ func (e *CodexExecutorRefactored) Refresh(ctx context.Context, auth *cliproxyaut
 	return auth, nil
 }
 
-// cacheHelper applies cache-related logic to the request
+// cacheHelper applies cache-related logic to the request.
 func (e *CodexExecutorRefactored) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
-	cacheID := extractCacheID(from, req.Payload, req.Model)
-
-	if cacheID != "" {
-		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_key", cacheID)
-	}
+	rawJSON, _, cacheHeaders := applyCodexPromptCache(from, req.Payload, req.Model, rawJSON, false)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
 	if err != nil {
 		return nil, err
 	}
 
-	if cacheID != "" {
-		applyCacheHeaders(httpReq, cacheID)
+	for k, values := range cacheHeaders {
+		for i := range values {
+			httpReq.Header.Add(k, values[i])
+		}
 	}
 
 	return httpReq, nil

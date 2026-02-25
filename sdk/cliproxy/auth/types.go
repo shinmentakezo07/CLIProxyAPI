@@ -260,6 +260,40 @@ func (a *Auth) ToolPrefixDisabled() bool {
 	return false
 }
 
+// WebsocketIncrementalEnabled reports whether websocket incremental input mode is enabled.
+//
+// The value is resolved from key "websockets" in attributes first, then metadata.
+// Attributes accept string bool values parsed by strconv.ParseBool.
+// Metadata accepts bool and string values.
+func WebsocketIncrementalEnabled(attributes map[string]string, metadata map[string]any) bool {
+	if len(attributes) > 0 {
+		if raw := strings.TrimSpace(attributes["websockets"]); raw != "" {
+			parsed, errParse := strconv.ParseBool(raw)
+			if errParse == nil {
+				return parsed
+			}
+		}
+	}
+	if len(metadata) == 0 {
+		return false
+	}
+	raw, ok := metadata["websockets"]
+	if !ok || raw == nil {
+		return false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return value
+	case string:
+		parsed, errParse := strconv.ParseBool(strings.TrimSpace(value))
+		if errParse == nil {
+			return parsed
+		}
+	default:
+	}
+	return false
+}
+
 // RequestRetryOverride returns the auth-file scoped request_retry override when present.
 // The value is read from metadata key "request_retry" (or legacy "request-retry").
 func (a *Auth) RequestRetryOverride() (int, bool) {
