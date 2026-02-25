@@ -317,6 +317,11 @@ func (e *CodexWebsocketsExecutorRefactored) Execute(ctx context.Context, auth *c
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
+	if cfg := parseCodexAgentConfig(body, req.Payload); cfg.Enabled() {
+		logWithRequestID(ctx).Debugf("codex websockets executor: agent_mode=%s requested; falling back to HTTP codex executor for non-stream execution", cfg.Mode)
+		return e.CodexExecutor.Execute(ctx, auth, req, opts)
+	}
+	body = applyCodexReasoningProfile(body)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.SetBytes(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
@@ -445,6 +450,9 @@ func (e *CodexWebsocketsExecutorRefactored) ExecuteStream(ctx context.Context, a
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
+	if cfg := parseCodexAgentConfig(req.Payload); cfg.Enabled() {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "codex agent_mode is not supported for streaming requests"}
+	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	apiKey, baseURL := codexCreds(auth)
@@ -466,6 +474,7 @@ func (e *CodexWebsocketsExecutorRefactored) ExecuteStream(ctx context.Context, a
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, body, requestedModel)
+	body = applyCodexReasoningProfile(body)
 
 	body, preflight, err := e.prepareCodexWebsocketPreflight(ctx, auth, req, from, apiKey, baseURL, body)
 	if err != nil {

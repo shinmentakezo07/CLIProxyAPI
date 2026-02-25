@@ -75,6 +75,9 @@ func (e *CodexExecutorRefactored) HttpRequest(ctx context.Context, auth *cliprox
 
 // Execute performs a non-streaming request to the Codex API.
 func (e *CodexExecutorRefactored) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if cfg := parseCodexAgentConfig(req.Payload); cfg.Enabled() && opts.Alt == "responses/compact" {
+		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadRequest, msg: "codex agent_mode is not supported for /responses/compact"}
+	}
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
 	}
@@ -111,84 +114,35 @@ func (e *CodexExecutorRefactored) executeViaStream(ctx context.Context, auth *cl
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
+	agentCfg := parseCodexAgentConfig(body, req.Payload)
 	body, err = normalizeCodexRequestBody(body, baseModel, true)
 	if err != nil {
 		return resp, err
 	}
 
-	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
+	var pass codexCompletedPassResult
+	switch agentCfg.Mode {
+	case codexAgentModePlannerReviewer:
+		pass, err = e.executeCodexPlannerReviewerPipeline(ctx, auth, apiKey, baseURL, from, req, body)
+	default:
+		url := strings.TrimSuffix(baseURL, "/") + "/responses"
+		pass, err = e.executeCodexCompletedHTTPPass(ctx, auth, apiKey, url, from, req, body, true)
+	}
 	if err != nil {
 		return resp, err
 	}
-
-	provider := NewCodexProvider(e.cfg)
-	provider.ApplyHeaders(httpReq, auth, apiKey, true)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      body,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
-	}
-	defer httpResp.Body.Close()
-
-	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		appendAPIResponseChunk(ctx, e.cfg, b)
-		logWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		return resp, statusErr{code: httpResp.StatusCode, msg: string(b)}
+	if pass.UsageOK {
+		reporter.publish(ctx, pass.Usage)
 	}
 
-	data, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
+	reqBodyForTranslation := body
+	if len(pass.Request) > 0 {
+		reqBodyForTranslation = pass.Request
 	}
-	appendAPIResponseChunk(ctx, e.cfg, data)
-
-	// Parse stream to find response.completed event
-	lines := bytes.Split(data, []byte("\n"))
-	for _, line := range lines {
-		if !bytes.HasPrefix(line, dataTag) {
-			continue
-		}
-
-		line = bytes.TrimSpace(line[5:])
-		if gjson.GetBytes(line, "type").String() != "response.completed" {
-			continue
-		}
-
-		if detail, ok := parseCodexUsage(line); ok {
-			reporter.publish(ctx, detail)
-		}
-
-		var param any
-		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, line, &param)
-		resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
-		return resp, nil
-	}
-
-	return resp, statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
+	var param any
+	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, reqBodyForTranslation, pass.Completed, &param)
+	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: pass.Headers}
+	return resp, nil
 }
 
 // executeCompact handles the /responses/compact endpoint
@@ -287,6 +241,9 @@ func (e *CodexExecutorRefactored) executeCompact(ctx context.Context, auth *clip
 func (e *CodexExecutorRefactored) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
+	}
+	if cfg := parseCodexAgentConfig(req.Payload); cfg.Enabled() {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "codex agent_mode is not supported for streaming requests"}
 	}
 
 	return e.base.ExecuteStream(ctx, auth, req, opts)

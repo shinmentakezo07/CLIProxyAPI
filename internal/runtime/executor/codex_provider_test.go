@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -51,6 +52,92 @@ func TestNormalizeCodexRequestBody_MapsReasoningEffortAlias(t *testing.T) {
 	}
 	if gjson.GetBytes(got, "reasoning_effort").Exists() {
 		t.Fatalf("expected reasoning_effort alias to be removed")
+	}
+}
+
+func TestNormalizeCodexRequestBody_AutoInjectsReasoningProfile(t *testing.T) {
+	input := []byte(`{
+		"reasoning_effort":"high",
+		"instructions":"Base instructions",
+		"_cliproxy":{"reasoning_profile":"deep_engineering"}
+	}`)
+
+	got, err := normalizeCodexRequestBody(input, "gpt-5", true)
+	if err != nil {
+		t.Fatalf("normalizeCodexRequestBody returned error: %v", err)
+	}
+
+	instructions := gjson.GetBytes(got, "instructions").String()
+	if instructions == "" {
+		t.Fatal("instructions should not be empty")
+	}
+	if instructions == "Base instructions" {
+		t.Fatalf("expected reasoning profile to append instructions")
+	}
+	if !containsAll(instructions, "Base instructions", "Architectural/Design Rationale", "Edge Cases and Failure Prevention", "Production-Ready Implementation") {
+		t.Fatalf("instructions missing expected scaffold: %q", instructions)
+	}
+	if !containsAll(instructions, "Override Brevity", "Library & Framework Discipline", "Response format (normal mode)") {
+		t.Fatalf("instructions missing deep engineering standards block: %q", instructions)
+	}
+	if gjson.GetBytes(got, "_cliproxy").Exists() {
+		t.Fatalf("expected local _cliproxy controls to be stripped")
+	}
+}
+
+func TestNormalizeCodexRequestBody_DoesNotInjectReasoningProfileWhenThinkingDisabled(t *testing.T) {
+	input := []byte(`{
+		"reasoning_effort":"none",
+		"instructions":"Base instructions",
+		"_cliproxy":{"reasoning_profile":"deep_engineering"}
+	}`)
+
+	got, err := normalizeCodexRequestBody(input, "gpt-5", true)
+	if err != nil {
+		t.Fatalf("normalizeCodexRequestBody returned error: %v", err)
+	}
+
+	if instructions := gjson.GetBytes(got, "instructions").String(); instructions != "Base instructions" {
+		t.Fatalf("instructions = %q, want %q", instructions, "Base instructions")
+	}
+	if gjson.GetBytes(got, "_cliproxy").Exists() {
+		t.Fatalf("expected local _cliproxy controls to be stripped")
+	}
+}
+
+func TestNormalizeCodexRequestBody_IncludesCustomReasoningPrompt(t *testing.T) {
+	input := []byte(`{
+		"reasoning":{"effort":"medium"},
+		"_cliproxy":{"reasoning_prompt":"Use strict WCAG AAA and include an edge-case checklist."}
+	}`)
+
+	got, err := normalizeCodexRequestBody(input, "gpt-5", true)
+	if err != nil {
+		t.Fatalf("normalizeCodexRequestBody returned error: %v", err)
+	}
+
+	instructions := gjson.GetBytes(got, "instructions").String()
+	if !containsAll(instructions, "strict WCAG AAA", "edge-case checklist") {
+		t.Fatalf("custom reasoning prompt not injected: %q", instructions)
+	}
+}
+
+func TestNormalizeCodexRequestBody_StripsAgentModeControls(t *testing.T) {
+	input := []byte(`{
+		"agent_mode":"planner-reviewer",
+		"_cliproxy":{"agent_mode":"planner-reviewer"},
+		"instructions":"hello"
+	}`)
+
+	got, err := normalizeCodexRequestBody(input, "gpt-5", true)
+	if err != nil {
+		t.Fatalf("normalizeCodexRequestBody returned error: %v", err)
+	}
+	if gjson.GetBytes(got, "agent_mode").Exists() {
+		t.Fatalf("expected agent_mode to be stripped")
+	}
+	if gjson.GetBytes(got, "_cliproxy").Exists() {
+		t.Fatalf("expected _cliproxy to be stripped")
 	}
 }
 
@@ -121,9 +208,25 @@ func TestCodexCompletedEventPayload(t *testing.T) {
 	}
 }
 
+func TestBuildCodexReasoningProfilePrompt_DeepEngineeringIncludesLanguageStandards(t *testing.T) {
+	got := buildCodexReasoningProfilePrompt("deep_engineering", "")
+	if !containsAll(got, "Language-specific awareness", "Shell/Bash", "SQL: Always parameterize queries") {
+		t.Fatalf("deep engineering prompt missing language-specific standards: %q", got)
+	}
+}
+
 func contextWithGinForTest(c *gin.Context) context.Context {
 	if c == nil {
 		return context.Background()
 	}
 	return context.WithValue(context.Background(), "gin", c)
+}
+
+func containsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }

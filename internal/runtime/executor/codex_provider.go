@@ -140,6 +140,9 @@ func normalizeCodexRequestBody(body []byte, model string, stream bool) ([]byte, 
 		}
 	}
 	body, _ = sjson.DeleteBytes(body, "reasoning_effort")
+	body = applyCodexReasoningProfile(body)
+	body, _ = sjson.DeleteBytes(body, "_cliproxy")
+	body, _ = sjson.DeleteBytes(body, "agent_mode")
 
 	// Delete Codex-specific fields that shouldn't be sent
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
@@ -178,4 +181,124 @@ func codexCompletedEventPayload(data []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return payload, true
+}
+
+// applyCodexReasoningProfile injects a structured analysis scaffold into `instructions`
+// when callers request a local reasoning profile and reasoning is enabled.
+//
+// Local control fields (removed before upstream request):
+//   - `_cliproxy.reasoning_profile`: "deep", "deep_engineering"
+//   - `_cliproxy.reasoning_prompt`: custom instruction text to append
+//   - `_cliproxy.force_reasoning_profile`: bool (inject even if reasoning is disabled)
+//
+// This intentionally requests a visible rationale/analysis structure rather than hidden chain-of-thought.
+func applyCodexReasoningProfile(body []byte) []byte {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+
+	profile := strings.TrimSpace(gjson.GetBytes(body, "_cliproxy.reasoning_profile").String())
+	custom := strings.TrimSpace(gjson.GetBytes(body, "_cliproxy.reasoning_prompt").String())
+	force := gjson.GetBytes(body, "_cliproxy.force_reasoning_profile").Bool()
+
+	if profile == "" && custom == "" {
+		return body
+	}
+	if !force && !codexReasoningEnabled(body) {
+		body, _ = sjson.DeleteBytes(body, "_cliproxy")
+		return body
+	}
+
+	snippet := buildCodexReasoningProfilePrompt(profile, custom)
+	if strings.TrimSpace(snippet) == "" {
+		body, _ = sjson.DeleteBytes(body, "_cliproxy")
+		return body
+	}
+
+	currentInstructions := strings.TrimSpace(gjson.GetBytes(body, "instructions").String())
+	if currentInstructions == "" {
+		body, _ = sjson.SetBytes(body, "instructions", snippet)
+	} else {
+		body, _ = sjson.SetBytes(body, "instructions", currentInstructions+"\n\n"+snippet)
+	}
+
+	body, _ = sjson.DeleteBytes(body, "_cliproxy")
+	return body
+}
+
+func codexReasoningEnabled(body []byte) bool {
+	for _, path := range []string{"reasoning.effort", "reasoning_effort"} {
+		if effort := gjson.GetBytes(body, path); effort.Exists() {
+			v := strings.ToLower(strings.TrimSpace(effort.String()))
+			if v != "" && v != "none" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func buildCodexReasoningProfilePrompt(profile, custom string) string {
+	var sections []string
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "", "none", "off", "disabled":
+		// no preset
+	case "deep", "deep_engineering", "engineering":
+		sections = append(sections, `Response profile:
+- Prefer thoroughness over brevity.
+- Use multi-lens analysis (user intent/cognitive load, technical tradeoffs/performance, accessibility, scalability/maintenance).
+- Avoid shallow conclusions; justify decisions concretely.
+- Provide a visible rationale summary instead of hidden internal reasoning.
+- Structure the answer into:
+  1. Architectural/Design Rationale
+  2. Edge Cases and Failure Prevention
+  3. Production-Ready Implementation`)
+		sections = append(sections, codexDeepEngineeringStandardsPrompt())
+		sections = append(sections, codexNormalResponseFormatPrompt())
+	default:
+		// Unknown preset names are ignored; custom text can still be applied.
+	}
+	if strings.TrimSpace(custom) != "" {
+		sections = append(sections, custom)
+	}
+	return strings.TrimSpace(strings.Join(sections, "\n\n"))
+}
+
+func codexDeepEngineeringStandardsPrompt() string {
+	return strings.TrimSpace(`Engineering depth policy:
+- Override Brevity: Immediately suspend the "Zero Fluff" rule when rigor is required.
+- Maximum Depth: Engage in exhaustive, deep-level reasoning before writing a single line when implementation is requested.
+- Prohibition: Never use surface-level logic. If the reasoning feels easy, dig deeper until the logic is irrefutable.
+
+Multi-Dimensional Analysis (apply when relevant):
+- Architectural: Separation of concerns, modularity, dependency direction, coupling.
+- Performance: Time/space complexity, memory layout, I/O costs, concurrency pitfalls, hot-path optimization.
+- Reliability: Error handling strategy, edge cases, failure modes, defensive programming.
+- Scalability: Will the design hold at 10x load/scope, and what is the long-term maintenance burden.
+- Security: Input validation, injection vectors, privilege boundaries, secrets management.
+- Ecosystem Fit: Prefer solutions native to the language/framework/community.
+
+Coding standards (all languages):
+- Library & Framework Discipline (critical): If a library/framework/engine is active in the project, use it. Do not rebuild utilities the ecosystem already provides, and do not introduce redundant overlapping dependencies. Exception: wrappers/extensions are fine when the underlying primitive stays project-native.
+- Language-specific awareness:
+  - Python: Type hints, pathlib over os.path, f-strings, dataclasses/Pydantic when appropriate, async for I/O-bound work.
+  - Lua: Respect table-driven design, metatables over class emulation unless already used, 1-based indexing, and target runtime differences.
+  - JavaScript/TypeScript: Strict TypeScript where possible, framework conventions (React/Vue/Svelte), ESM over CJS.
+  - Systems (Rust/Go/C/C++): Ownership/lifetime clarity, avoid unnecessary hot-path allocations, respect the language concurrency model.
+  - Shell/Bash: Prefer POSIX when portability matters, use set -euo pipefail, quote variables.
+  - SQL: Always parameterize queries unless a documented exception exists.
+- Universal standards:
+  - Error Handling: Never swallow errors silently; use the idiomatic error model.
+  - Naming: Descriptive and consistent, following language/project conventions.
+  - Structure: Logical module organization; no god files; avoid oversized functions.
+  - Comments: Explain why, not what.`)
+}
+
+func codexNormalResponseFormatPrompt() string {
+	return strings.TrimSpace(`Response format (normal mode):
+1. Rationale: 1-2 sentences on the approach and why.
+2. The Code: production-ready code using project-native libraries/frameworks.
+3. Edge Cases: what can fail and how the implementation defends against it.
+
+When describing reasoning, provide a visible rationale summary. Do not expose hidden chain-of-thought.`)
 }
