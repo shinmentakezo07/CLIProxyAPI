@@ -114,7 +114,7 @@ func (e *CodexExecutorRefactored) executeViaStream(ctx context.Context, auth *cl
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
-	agentCfg := parseCodexAgentConfig(body, req.Payload)
+	agentCfg := resolveCodexAgentConfigForNonStream(body, req.Payload)
 	body, err = normalizeCodexRequestBody(body, baseModel, true)
 	if err != nil {
 		return resp, err

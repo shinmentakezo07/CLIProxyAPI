@@ -9,9 +9,10 @@ import (
 
 func TestParseCodexAgentConfig(t *testing.T) {
 	tests := []struct {
-		name string
-		body []byte
-		want codexAgentMode
+		name        string
+		body        []byte
+		want        codexAgentMode
+		disableAuto bool
 	}{
 		{
 			name: "cliproxy nested",
@@ -28,6 +29,12 @@ func TestParseCodexAgentConfig(t *testing.T) {
 			body: []byte(`{"_cliproxy":{"agent_mode":"foo"}}`),
 			want: codexAgentModeNone,
 		},
+		{
+			name:        "explicit off",
+			body:        []byte(`{"_cliproxy":{"agent_mode":"off"}}`),
+			want:        codexAgentModeNone,
+			disableAuto: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -36,7 +43,30 @@ func TestParseCodexAgentConfig(t *testing.T) {
 			if got.Mode != tt.want {
 				t.Fatalf("mode = %q, want %q", got.Mode, tt.want)
 			}
+			if got.DisableAuto != tt.disableAuto {
+				t.Fatalf("DisableAuto = %v, want %v", got.DisableAuto, tt.disableAuto)
+			}
 		})
+	}
+}
+
+func TestResolveCodexAgentConfigForNonStream_DefaultsToPlannerReviewer(t *testing.T) {
+	got := resolveCodexAgentConfigForNonStream([]byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
+	if got.Mode != codexAgentModePlannerReviewer {
+		t.Fatalf("mode = %q, want %q", got.Mode, codexAgentModePlannerReviewer)
+	}
+	if got.Explicit {
+		t.Fatalf("expected default mode to be implicit")
+	}
+}
+
+func TestResolveCodexAgentConfigForNonStream_HonorsExplicitDisable(t *testing.T) {
+	got := resolveCodexAgentConfigForNonStream([]byte(`{"_cliproxy":{"agent_mode":"disabled"}}`))
+	if got.Enabled() {
+		t.Fatalf("expected agent mode disabled, got %q", got.Mode)
+	}
+	if !got.DisableAuto {
+		t.Fatalf("expected DisableAuto=true")
 	}
 }
 

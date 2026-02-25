@@ -23,7 +23,9 @@ const (
 )
 
 type codexAgentConfig struct {
-	Mode codexAgentMode
+	Mode        codexAgentMode
+	Explicit    bool
+	DisableAuto bool
 }
 
 func (c codexAgentConfig) Enabled() bool { return c.Mode != codexAgentModeNone }
@@ -46,13 +48,26 @@ func parseCodexAgentConfig(bodies ...[]byte) codexAgentConfig {
 			if raw == "" {
 				continue
 			}
+			if codexAgentModeDisabled(raw) {
+				return codexAgentConfig{Explicit: true, DisableAuto: true}
+			}
 			switch normalizeCodexAgentMode(raw) {
 			case codexAgentModePlannerReviewer:
-				return codexAgentConfig{Mode: codexAgentModePlannerReviewer}
+				return codexAgentConfig{Mode: codexAgentModePlannerReviewer, Explicit: true}
 			}
 		}
 	}
 	return codexAgentConfig{}
+}
+
+// resolveCodexAgentConfigForNonStream enables a default internal agent pipeline
+// for normal Codex non-stream requests unless the caller explicitly disables it.
+func resolveCodexAgentConfigForNonStream(bodies ...[]byte) codexAgentConfig {
+	cfg := parseCodexAgentConfig(bodies...)
+	if cfg.Enabled() || cfg.DisableAuto {
+		return cfg
+	}
+	return codexAgentConfig{Mode: codexAgentModePlannerReviewer}
 }
 
 func normalizeCodexAgentMode(v string) codexAgentMode {
@@ -63,6 +78,16 @@ func normalizeCodexAgentMode(v string) codexAgentMode {
 		return codexAgentModePlannerReviewer
 	default:
 		return codexAgentModeNone
+	}
+}
+
+func codexAgentModeDisabled(v string) bool {
+	s := strings.ToLower(strings.TrimSpace(v))
+	switch s {
+	case "off", "none", "disabled", "false", "0":
+		return true
+	default:
+		return false
 	}
 }
 

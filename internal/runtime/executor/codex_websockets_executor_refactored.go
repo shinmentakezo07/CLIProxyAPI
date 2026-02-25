@@ -317,8 +317,12 @@ func (e *CodexWebsocketsExecutorRefactored) Execute(ctx context.Context, auth *c
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
-	if cfg := parseCodexAgentConfig(body, req.Payload); cfg.Enabled() {
-		logWithRequestID(ctx).Debugf("codex websockets executor: agent_mode=%s requested; falling back to HTTP codex executor for non-stream execution", cfg.Mode)
+	if cfg := resolveCodexAgentConfigForNonStream(body, req.Payload); cfg.Enabled() {
+		modeSource := "enabled"
+		if cfg.Explicit {
+			modeSource = "requested"
+		}
+		logWithRequestID(ctx).Debugf("codex websockets executor: agent_mode=%s %s; falling back to HTTP codex executor for non-stream execution", cfg.Mode, modeSource)
 		return e.CodexExecutor.Execute(ctx, auth, req, opts)
 	}
 	body = applyCodexReasoningProfile(body)
