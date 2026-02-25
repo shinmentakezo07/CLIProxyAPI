@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -108,5 +109,46 @@ func TestGetOrCreateCodexPromptCacheRedis_RequestTTLOverridesConfiguredTTL(t *te
 	}
 	if ttl > 76*time.Second || ttl < 74*time.Second {
 		t.Fatalf("expected ttl around 75s, got %v", ttl)
+	}
+}
+
+func TestGetOrCreateCodexPromptCacheRedis_RepairsBlankValue(t *testing.T) {
+	resetCodexPromptCacheRedisForTest()
+	defer resetCodexPromptCacheRedisForTest()
+
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	cfg := &config.Config{}
+	cfg.CodexPromptCache.RedisURL = "redis://" + mr.Addr() + "/0"
+	cfg.CodexPromptCache.KeyPrefix = "cliproxy:test:"
+	cfg.CodexPromptCache.TTLSeconds = 11
+	cfg.CodexPromptCache.TimeoutMS = 500
+
+	redisKey := "cliproxy:test:gpt-5-user-blank"
+	if err := mr.Set(redisKey, "   "); err != nil {
+		t.Fatalf("seed blank redis value: %v", err)
+	}
+
+	id, ok := getOrCreateCodexPromptCacheRedis(cfg, "gpt-5-user-blank", 0)
+	if !ok || id == "" {
+		t.Fatalf("expected redis repair + create to succeed, got ok=%v id=%q", ok, id)
+	}
+	if strings.TrimSpace(id) != id {
+		t.Fatalf("expected trimmed cache id, got %q", id)
+	}
+
+	stored, err := mr.Get(redisKey)
+	if err != nil {
+		t.Fatalf("read repaired redis value: %v", err)
+	}
+	if stored != id {
+		t.Fatalf("stored redis value = %q, want %q", stored, id)
+	}
+	if ttl := mr.TTL(redisKey); ttl <= 0 {
+		t.Fatalf("expected repaired key to have ttl, got %v", ttl)
 	}
 }

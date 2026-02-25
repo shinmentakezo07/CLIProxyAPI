@@ -24,6 +24,14 @@ var (
 	codexPromptCacheRedisWarns sync.Map
 )
 
+type codexPromptCacheRedisValueState uint8
+
+const (
+	codexPromptCacheRedisValueMissing codexPromptCacheRedisValueState = iota
+	codexPromptCacheRedisValueValid
+	codexPromptCacheRedisValueInvalid
+)
+
 func redisConfigFrom(cfg *config.Config) (url string, keyPrefix string, ttl time.Duration, timeout time.Duration) {
 	url = ""
 	keyPrefix = config.DefaultCodexPromptCacheKeyPrefix
@@ -66,39 +74,63 @@ func getOrCreateCodexPromptCacheRedis(cfg *config.Config, key string, requestTTL
 	}
 
 	redisKey := keyPrefix + key
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
-	if existing, errGet := client.Get(ctx, redisKey).Result(); errGet == nil {
-		trimmed := strings.TrimSpace(existing)
-		if trimmed != "" {
-			return trimmed, true
+	// Retry once if we encounter a malformed value (blank/whitespace) and repair it.
+	for attempt := 0; attempt < 2; attempt++ {
+		existing, state, errGet := codexPromptCacheRedisGetValue(client, redisKey, timeout)
+		if errGet != nil {
+			warnCodexPromptCacheRedis("redis_get", errGet)
+			return "", false
 		}
-	} else if errGet != redis.Nil {
-		warnCodexPromptCacheRedis("redis_get", errGet)
+		switch state {
+		case codexPromptCacheRedisValueValid:
+			return existing, true
+		case codexPromptCacheRedisValueInvalid:
+			warnCodexPromptCacheRedisInvalidValue("redis_get_invalid")
+			if errDel := codexPromptCacheRedisDeleteKey(client, redisKey, timeout); errDel != nil {
+				warnCodexPromptCacheRedis("redis_del_invalid", errDel)
+				return "", false
+			}
+			continue
+		}
+
+		candidate := uuid.NewString()
+		setOK, errSet := codexPromptCacheRedisSetNX(client, redisKey, candidate, ttl, timeout)
+		if errSet != nil {
+			warnCodexPromptCacheRedis("redis_setnx", errSet)
+			return "", false
+		}
+		if setOK {
+			return candidate, true
+		}
+
+		winner, winnerState, errWinner := codexPromptCacheRedisGetValue(client, redisKey, timeout)
+		if errWinner != nil {
+			warnCodexPromptCacheRedis("redis_get_after_setnx", errWinner)
+			return "", false
+		}
+		switch winnerState {
+		case codexPromptCacheRedisValueValid:
+			return winner, true
+		case codexPromptCacheRedisValueInvalid:
+			warnCodexPromptCacheRedisInvalidValue("redis_get_after_setnx_invalid")
+			if attempt == 0 {
+				if errDel := codexPromptCacheRedisDeleteKey(client, redisKey, timeout); errDel != nil {
+					warnCodexPromptCacheRedis("redis_del_invalid_after_setnx", errDel)
+					return "", false
+				}
+				continue
+			}
+		case codexPromptCacheRedisValueMissing:
+			// Another actor may have deleted the key between SetNX(false) and Get; retry once.
+			if attempt == 0 {
+				continue
+			}
+		}
 		return "", false
 	}
 
-	candidate := uuid.NewString()
-	setOK, errSet := client.SetNX(ctx, redisKey, candidate, ttl).Result()
-	if errSet != nil {
-		warnCodexPromptCacheRedis("redis_setnx", errSet)
-		return "", false
-	}
-	if setOK {
-		return candidate, true
-	}
-
-	winner, errWinner := client.Get(ctx, redisKey).Result()
-	if errWinner != nil {
-		warnCodexPromptCacheRedis("redis_get_after_setnx", errWinner)
-		return "", false
-	}
-	winner = strings.TrimSpace(winner)
-	if winner == "" {
-		return "", false
-	}
-	return winner, true
+	return "", false
 }
 
 func codexPromptCacheRedisClient(redisURL string, timeout time.Duration) (*redis.Client, error) {
@@ -136,6 +168,36 @@ func codexPromptCacheRedisClient(redisURL string, timeout time.Duration) (*redis
 	return client, nil
 }
 
+func codexPromptCacheRedisGetValue(client *redis.Client, key string, timeout time.Duration) (string, codexPromptCacheRedisValueState, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	value, err := client.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return "", codexPromptCacheRedisValueMissing, nil
+	}
+	if err != nil {
+		return "", codexPromptCacheRedisValueMissing, err
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", codexPromptCacheRedisValueInvalid, nil
+	}
+	return value, codexPromptCacheRedisValueValid, nil
+}
+
+func codexPromptCacheRedisSetNX(client *redis.Client, key, value string, ttl, timeout time.Duration) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return client.SetNX(ctx, key, value, ttl).Result()
+}
+
+func codexPromptCacheRedisDeleteKey(client *redis.Client, key string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return client.Del(ctx, key).Err()
+}
+
 func warnCodexPromptCacheRedis(kind string, err error) {
 	if err == nil {
 		return
@@ -144,6 +206,16 @@ func warnCodexPromptCacheRedis(kind string, err error) {
 		return
 	}
 	log.WithError(err).Warn("codex prompt cache redis unavailable, falling back to local cache")
+}
+
+func warnCodexPromptCacheRedisInvalidValue(kind string) {
+	if kind == "" {
+		kind = "redis_invalid_value"
+	}
+	if _, loaded := codexPromptCacheRedisWarns.LoadOrStore("invalid:"+kind, struct{}{}); loaded {
+		return
+	}
+	log.Warn("codex prompt cache redis contains blank cache id, attempting key repair")
 }
 
 func resetCodexPromptCacheRedisForTest() {
