@@ -5,7 +5,9 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
@@ -32,7 +34,7 @@ func TestApplyCodexPromptCache_ClaudeCachesByModelAndUserID(t *testing.T) {
 	reqPayload := []byte(`{"metadata":{"user_id":"user-123"}}`)
 	rawJSON := []byte(`{"input":[]}`)
 
-	out, cacheID, headers := applyCodexPromptCache(sdktranslator.FromString("claude"), reqPayload, "gpt-5", rawJSON, false)
+	out, cacheID, headers := applyCodexPromptCache(nil, sdktranslator.FromString("claude"), reqPayload, "gpt-5", rawJSON, false)
 	if cacheID == "" {
 		t.Fatal("expected non-empty cache ID")
 	}
@@ -46,12 +48,12 @@ func TestApplyCodexPromptCache_ClaudeCachesByModelAndUserID(t *testing.T) {
 		t.Fatalf("Session_id = %q, want %q", got, cacheID)
 	}
 
-	_, cacheID2, _ := applyCodexPromptCache(sdktranslator.FromString("claude"), reqPayload, "gpt-5", []byte(`{"input":[1]}`), false)
+	_, cacheID2, _ := applyCodexPromptCache(nil, sdktranslator.FromString("claude"), reqPayload, "gpt-5", []byte(`{"input":[1]}`), false)
 	if cacheID2 != cacheID {
 		t.Fatalf("expected stable cache ID for same model+user: first=%q second=%q", cacheID, cacheID2)
 	}
 
-	_, cacheIDOtherModel, _ := applyCodexPromptCache(sdktranslator.FromString("claude"), reqPayload, "gpt-4.1", []byte(`{"input":[]}`), false)
+	_, cacheIDOtherModel, _ := applyCodexPromptCache(nil, sdktranslator.FromString("claude"), reqPayload, "gpt-4.1", []byte(`{"input":[]}`), false)
 	if cacheIDOtherModel == cacheID {
 		t.Fatalf("expected different cache ID for different model, got %q", cacheIDOtherModel)
 	}
@@ -63,7 +65,7 @@ func TestApplyCodexPromptCache_OpenAIResponseUsesPromptCacheKey(t *testing.T) {
 	reqPayload := []byte(`{"prompt_cache_key":"pck-123"}`)
 	rawJSON := []byte(`{"input":[]}`)
 
-	out, cacheID, headers := applyCodexPromptCache(sdktranslator.FromString("openai-response"), reqPayload, "gpt-5", rawJSON, false)
+	out, cacheID, headers := applyCodexPromptCache(nil, sdktranslator.FromString("openai-response"), reqPayload, "gpt-5", rawJSON, false)
 	if cacheID != "pck-123" {
 		t.Fatalf("cacheID = %q, want %q", cacheID, "pck-123")
 	}
@@ -78,11 +80,32 @@ func TestApplyCodexPromptCache_OpenAIResponseUsesPromptCacheKey(t *testing.T) {
 	}
 }
 
+func TestApplyCodexPromptCache_OpenAIResponseRetentionDoesNotDisableExplicitKey(t *testing.T) {
+	resetCodexCacheForTest()
+
+	reqPayload := []byte(`{"prompt_cache_key":"pck-retained","prompt_cache_retention":"off"}`)
+	rawJSON := []byte(`{"input":[]}`)
+
+	out, cacheID, headers := applyCodexPromptCache(nil, sdktranslator.FromString("openai-response"), reqPayload, "gpt-5", rawJSON, false)
+	if cacheID != "pck-retained" {
+		t.Fatalf("cacheID = %q, want %q", cacheID, "pck-retained")
+	}
+	if got := gjson.GetBytes(out, "prompt_cache_key").String(); got != "pck-retained" {
+		t.Fatalf("prompt_cache_key = %q, want %q", got, "pck-retained")
+	}
+	if got := headers.Get("Conversation_id"); got != "pck-retained" {
+		t.Fatalf("Conversation_id = %q, want %q", got, "pck-retained")
+	}
+	if got := headers.Get("Session_id"); got != "pck-retained" {
+		t.Fatalf("Session_id = %q, want %q", got, "pck-retained")
+	}
+}
+
 func TestApplyCodexPromptCache_NoCacheInputLeavesPayloadUnchanged(t *testing.T) {
 	resetCodexCacheForTest()
 
 	rawJSON := []byte(`{"input":[]}`)
-	out, cacheID, headers := applyCodexPromptCache(sdktranslator.FromString("codex"), []byte(`{"input":[]}`), "gpt-5", rawJSON, false)
+	out, cacheID, headers := applyCodexPromptCache(nil, sdktranslator.FromString("codex"), []byte(`{"input":[]}`), "gpt-5", rawJSON, false)
 	if cacheID != "" {
 		t.Fatalf("cacheID = %q, want empty", cacheID)
 	}
@@ -101,6 +124,7 @@ func TestApplyCodexPromptCacheHeaders_SkipsWhenBodyEmpty(t *testing.T) {
 	resetCodexCacheForTest()
 
 	out, headers := applyCodexPromptCacheHeaders(
+		nil,
 		sdktranslator.FromString("claude"),
 		[]byte(`{"metadata":{"user_id":"user-123"}}`),
 		"gpt-5",
@@ -111,6 +135,60 @@ func TestApplyCodexPromptCacheHeaders_SkipsWhenBodyEmpty(t *testing.T) {
 	}
 	if len(headers) != 0 {
 		t.Fatalf("expected empty headers, got: %#v", headers)
+	}
+}
+
+func TestApplyCodexPromptCache_CodexRetentionAndUserAutoCache(t *testing.T) {
+	resetCodexCacheForTest()
+
+	reqPayload := []byte(`{"user":"user-xyz","prompt_cache_retention":"24h"}`)
+	rawJSON := []byte(`{"input":[]}`)
+
+	out, cacheID, headers := applyCodexPromptCache(nil, sdktranslator.FromString("codex"), reqPayload, "gpt-5", rawJSON, false)
+	if cacheID == "" {
+		t.Fatal("expected non-empty cache ID")
+	}
+	if got := gjson.GetBytes(out, "prompt_cache_key").String(); got != cacheID {
+		t.Fatalf("prompt_cache_key = %q, want %q", got, cacheID)
+	}
+	if got := headers.Get("Conversation_id"); got != cacheID {
+		t.Fatalf("Conversation_id = %q, want %q", got, cacheID)
+	}
+	if got := headers.Get("Session_id"); got != cacheID {
+		t.Fatalf("Session_id = %q, want %q", got, cacheID)
+	}
+}
+
+func TestApplyCodexPromptCache_RetentionDisabledSkipsAutoCache(t *testing.T) {
+	resetCodexCacheForTest()
+
+	reqPayload := []byte(`{"user":"user-xyz","prompt_cache_retention":"off"}`)
+	rawJSON := []byte(`{"input":[]}`)
+
+	out, cacheID, headers := applyCodexPromptCache(nil, sdktranslator.FromString("codex"), reqPayload, "gpt-5", rawJSON, false)
+	if cacheID != "" {
+		t.Fatalf("cacheID = %q, want empty", cacheID)
+	}
+	if len(headers) != 0 {
+		t.Fatalf("headers = %#v, want empty", headers)
+	}
+	if gjson.GetBytes(out, "prompt_cache_key").Exists() {
+		t.Fatalf("prompt_cache_key should not be set when retention disables cache")
+	}
+}
+
+func TestCodexPromptCacheEffectiveTTL_PreservesSubMinuteConfiguredTTL(t *testing.T) {
+	ttl := codexPromptCacheEffectiveTTL(&config.Config{CodexPromptCache: config.CodexPromptCacheConfig{TTLSeconds: 7}}, nil)
+	if ttl != 7*time.Second {
+		t.Fatalf("ttl = %v, want %v", ttl, 7*time.Second)
+	}
+}
+
+func TestCodexPromptCacheEffectiveTTL_PreservesSubMinuteRetentionTTL(t *testing.T) {
+	reqPayload := []byte(`{"prompt_cache_retention":5}`)
+	ttl := codexPromptCacheEffectiveTTL(nil, reqPayload)
+	if ttl != 5*time.Second {
+		t.Fatalf("ttl = %v, want %v", ttl, 5*time.Second)
 	}
 }
 

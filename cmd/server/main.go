@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -392,6 +393,37 @@ func main() {
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
+	}
+	if value, ok := lookupEnv("CODEX_PROMPT_CACHE_REDIS_URL", "codex_prompt_cache_redis_url"); ok {
+		cfg.CodexPromptCache.RedisURL = value
+	}
+	if value, ok := lookupEnv("CODEX_PROMPT_CACHE_KEY_PREFIX", "codex_prompt_cache_key_prefix"); ok {
+		cfg.CodexPromptCache.KeyPrefix = value
+	}
+	if value, ok := lookupEnv("CODEX_PROMPT_CACHE_TTL_SECONDS", "codex_prompt_cache_ttl_seconds"); ok {
+		if parsed, errAtoi := strconv.Atoi(strings.TrimSpace(value)); errAtoi == nil && parsed > 0 {
+			cfg.CodexPromptCache.TTLSeconds = parsed
+		} else {
+			log.WithError(errAtoi).Warn("invalid CODEX_PROMPT_CACHE_TTL_SECONDS; keeping config value")
+		}
+	}
+	if value, ok := lookupEnv("CODEX_PROMPT_CACHE_TIMEOUT_MS", "codex_prompt_cache_timeout_ms"); ok {
+		if parsed, errAtoi := strconv.Atoi(strings.TrimSpace(value)); errAtoi == nil && parsed > 0 {
+			cfg.CodexPromptCache.TimeoutMS = parsed
+		} else {
+			log.WithError(errAtoi).Warn("invalid CODEX_PROMPT_CACHE_TIMEOUT_MS; keeping config value")
+		}
+	}
+	cfg.CodexPromptCache.RedisURL = strings.TrimSpace(cfg.CodexPromptCache.RedisURL)
+	cfg.CodexPromptCache.KeyPrefix = strings.TrimSpace(cfg.CodexPromptCache.KeyPrefix)
+	if cfg.CodexPromptCache.KeyPrefix == "" {
+		cfg.CodexPromptCache.KeyPrefix = config.DefaultCodexPromptCacheKeyPrefix
+	}
+	if cfg.CodexPromptCache.TTLSeconds <= 0 {
+		cfg.CodexPromptCache.TTLSeconds = config.DefaultCodexPromptCacheTTLSeconds
+	}
+	if cfg.CodexPromptCache.TimeoutMS <= 0 {
+		cfg.CodexPromptCache.TimeoutMS = config.DefaultCodexPromptCacheTimeoutMS
 	}
 
 	// In cloud deploy mode, check if we have a valid configuration

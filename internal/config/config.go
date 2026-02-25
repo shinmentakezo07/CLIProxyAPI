@@ -19,8 +19,11 @@ import (
 )
 
 const (
-	DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
-	DefaultPprofAddr             = "127.0.0.1:8316"
+	DefaultPanelGitHubRepository      = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+	DefaultPprofAddr                  = "127.0.0.1:8316"
+	DefaultCodexPromptCacheKeyPrefix  = "cliproxy:codex:prompt-cache:"
+	DefaultCodexPromptCacheTTLSeconds = 3600
+	DefaultCodexPromptCacheTimeoutMS  = 150
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -117,6 +120,9 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// CodexPromptCache configures optional distributed prompt-cache behavior for Codex.
+	CodexPromptCache CodexPromptCacheConfig `yaml:"codex-prompt-cache" json:"codex-prompt-cache"`
 
 	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
@@ -243,6 +249,18 @@ type AmpUpstreamAPIKeyEntry struct {
 
 	// APIKeys are the client API keys (from top-level api-keys) that map to this upstream key.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
+}
+
+// CodexPromptCacheConfig configures optional Redis-backed cache sharing for Codex prompt cache IDs.
+type CodexPromptCacheConfig struct {
+	// RedisURL enables distributed cache when set. Empty means disabled.
+	RedisURL string `yaml:"redis-url,omitempty" json:"redis-url,omitempty"`
+	// KeyPrefix namespaces Redis keys for Codex prompt cache IDs.
+	KeyPrefix string `yaml:"key-prefix,omitempty" json:"key-prefix,omitempty"`
+	// TTLSeconds controls how long generated cache IDs remain valid.
+	TTLSeconds int `yaml:"ttl-seconds,omitempty" json:"ttl-seconds,omitempty"`
+	// TimeoutMS controls Redis operation timeout in milliseconds.
+	TimeoutMS int `yaml:"timeout-ms,omitempty" json:"timeout-ms,omitempty"`
 }
 
 // PayloadConfig defines default and override parameter rules applied to provider payloads.
@@ -553,6 +571,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.CodexPromptCache.KeyPrefix = DefaultCodexPromptCacheKeyPrefix
+	cfg.CodexPromptCache.TTLSeconds = DefaultCodexPromptCacheTTLSeconds
+	cfg.CodexPromptCache.TimeoutMS = DefaultCodexPromptCacheTimeoutMS
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -607,6 +628,18 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.ErrorLogsMaxFiles < 0 {
 		cfg.ErrorLogsMaxFiles = 10
+	}
+
+	cfg.CodexPromptCache.RedisURL = strings.TrimSpace(cfg.CodexPromptCache.RedisURL)
+	cfg.CodexPromptCache.KeyPrefix = strings.TrimSpace(cfg.CodexPromptCache.KeyPrefix)
+	if cfg.CodexPromptCache.KeyPrefix == "" {
+		cfg.CodexPromptCache.KeyPrefix = DefaultCodexPromptCacheKeyPrefix
+	}
+	if cfg.CodexPromptCache.TTLSeconds <= 0 {
+		cfg.CodexPromptCache.TTLSeconds = DefaultCodexPromptCacheTTLSeconds
+	}
+	if cfg.CodexPromptCache.TimeoutMS <= 0 {
+		cfg.CodexPromptCache.TimeoutMS = DefaultCodexPromptCacheTimeoutMS
 	}
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.

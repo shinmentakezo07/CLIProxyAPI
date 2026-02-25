@@ -366,7 +366,7 @@ func (e *CodexExecutorRefactored) Refresh(ctx context.Context, auth *cliproxyaut
 
 // cacheHelper applies cache-related logic to the request.
 func (e *CodexExecutorRefactored) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
-	rawJSON, _, cacheHeaders := applyCodexPromptCache(from, req.Payload, req.Model, rawJSON, false)
+	rawJSON, _, cacheHeaders := applyCodexPromptCache(e.cfg, from, req.Payload, req.Model, rawJSON, false)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
 	if err != nil {

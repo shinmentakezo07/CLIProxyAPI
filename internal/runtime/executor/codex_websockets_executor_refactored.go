@@ -117,7 +117,7 @@ func (e *CodexWebsocketsExecutorRefactored) prepareCodexWebsocketPreflight(ctx c
 		return nil, preflight, err
 	}
 
-	body, wsHeaders := applyCodexPromptCacheHeaders(from, req.Payload, req.Model, body)
+	body, wsHeaders := applyCodexPromptCacheHeaders(e.cfg, from, req.Payload, req.Model, body)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey)
 
 	preflight.wsURL = wsURL
@@ -812,8 +812,8 @@ func buildCodexResponsesWebsocketURL(httpURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-func applyCodexPromptCacheHeaders(from sdktranslator.Format, reqPayload []byte, model string, rawJSON []byte) ([]byte, http.Header) {
-	rawJSON, _, headers := applyCodexPromptCache(from, reqPayload, model, rawJSON, true)
+func applyCodexPromptCacheHeaders(cfg *config.Config, from sdktranslator.Format, reqPayload []byte, model string, rawJSON []byte) ([]byte, http.Header) {
+	rawJSON, _, headers := applyCodexPromptCache(cfg, from, reqPayload, model, rawJSON, true)
 	return rawJSON, headers
 }
 
