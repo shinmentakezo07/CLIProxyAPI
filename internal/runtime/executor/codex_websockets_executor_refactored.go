@@ -674,6 +674,38 @@ func writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Con
 	return conn.WriteMessage(websocket.TextMessage, payload)
 }
 
+func buildCodexWebsocketAppendRequestBody(body []byte) ([]byte, bool) {
+	if len(body) == 0 {
+		return nil, false
+	}
+	if prev := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); prev == "" {
+		return nil, false
+	}
+
+	inputNode := gjson.GetBytes(body, "input")
+	wsReqBody := []byte(`{}`)
+	wsReqBody, _ = sjson.SetBytes(wsReqBody, "type", "response.append")
+	if inputNode.Exists() && inputNode.IsArray() && strings.TrimSpace(inputNode.Raw) != "" {
+		wsReqBody, _ = sjson.SetRawBytes(wsReqBody, "input", []byte(inputNode.Raw))
+		return wsReqBody, true
+	}
+	wsReqBody, _ = sjson.SetRawBytes(wsReqBody, "input", []byte("[]"))
+	return wsReqBody, true
+}
+
+func buildCodexWebsocketCreateRequestBody(body []byte) []byte {
+	if len(body) == 0 {
+		return nil
+	}
+	wsReqBody, errSet := sjson.SetBytes(bytes.Clone(body), "type", "response.create")
+	if errSet == nil && len(wsReqBody) > 0 {
+		return wsReqBody
+	}
+	fallback := bytes.Clone(body)
+	fallback, _ = sjson.SetBytes(fallback, "type", "response.create")
+	return fallback
+}
+
 func buildCodexWebsocketRequestBody(body []byte, allowAppend bool) []byte {
 	if len(body) == 0 {
 		return nil
@@ -686,26 +718,12 @@ func buildCodexWebsocketRequestBody(body []byte, allowAppend bool) []byte {
 	// NOTE: The upstream expects the first websocket event on each connection to be `response.create`,
 	// so we only use `response.append` after we have initialized the current connection.
 	if allowAppend {
-		if prev := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); prev != "" {
-			inputNode := gjson.GetBytes(body, "input")
-			wsReqBody := []byte(`{}`)
-			wsReqBody, _ = sjson.SetBytes(wsReqBody, "type", "response.append")
-			if inputNode.Exists() && inputNode.IsArray() && strings.TrimSpace(inputNode.Raw) != "" {
-				wsReqBody, _ = sjson.SetRawBytes(wsReqBody, "input", []byte(inputNode.Raw))
-				return wsReqBody
-			}
-			wsReqBody, _ = sjson.SetRawBytes(wsReqBody, "input", []byte("[]"))
+		if wsReqBody, ok := buildCodexWebsocketAppendRequestBody(body); ok {
 			return wsReqBody
 		}
 	}
 
-	wsReqBody, errSet := sjson.SetBytes(bytes.Clone(body), "type", "response.create")
-	if errSet == nil && len(wsReqBody) > 0 {
-		return wsReqBody
-	}
-	fallback := bytes.Clone(body)
-	fallback, _ = sjson.SetBytes(fallback, "type", "response.create")
-	return fallback
+	return buildCodexWebsocketCreateRequestBody(body)
 }
 
 func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead) (int, []byte, error) {

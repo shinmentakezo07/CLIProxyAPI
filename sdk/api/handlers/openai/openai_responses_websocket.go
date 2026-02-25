@@ -204,96 +204,22 @@ func normalizeResponsesWebsocketRequestWithMode(rawJSON []byte, lastRequest []by
 	}
 }
 
-func normalizeResponseCreateRequest(rawJSON []byte) ([]byte, []byte, *interfaces.ErrorMessage) {
+func deleteResponsesWebsocketRequestType(rawJSON []byte) []byte {
 	normalized, errDelete := sjson.DeleteBytes(rawJSON, "type")
 	if errDelete != nil {
-		normalized = bytes.Clone(rawJSON)
+		return bytes.Clone(rawJSON)
 	}
-	normalized, _ = sjson.SetBytes(normalized, "stream", true)
-	if !gjson.GetBytes(normalized, "input").Exists() {
-		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte("[]"))
-	}
-
-	modelName := strings.TrimSpace(gjson.GetBytes(normalized, "model").String())
-	if modelName == "" {
-		return nil, nil, &interfaces.ErrorMessage{
-			StatusCode: http.StatusBadRequest,
-			Error:      fmt.Errorf("missing model in response.create request"),
-		}
-	}
-	return normalized, bytes.Clone(normalized), nil
+	return normalized
 }
 
-func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool) ([]byte, []byte, *interfaces.ErrorMessage) {
+func setResponsesWebsocketStreamTrue(rawJSON []byte) []byte {
+	rawJSON, _ = sjson.SetBytes(rawJSON, "stream", true)
+	return rawJSON
+}
+
+func inheritResponsesWebsocketRequestFields(normalized []byte, lastRequest []byte) []byte {
 	if len(lastRequest) == 0 {
-		return nil, lastRequest, &interfaces.ErrorMessage{
-			StatusCode: http.StatusBadRequest,
-			Error:      fmt.Errorf("websocket request received before response.create"),
-		}
-	}
-
-	nextInput := gjson.GetBytes(rawJSON, "input")
-	if !nextInput.Exists() || !nextInput.IsArray() {
-		return nil, lastRequest, &interfaces.ErrorMessage{
-			StatusCode: http.StatusBadRequest,
-			Error:      fmt.Errorf("websocket request requires array field: input"),
-		}
-	}
-
-	// Websocket v2 mode uses response.create with previous_response_id + incremental input.
-	// Do not expand it into a full input transcript; upstream expects the incremental payload.
-	if allowIncrementalInputWithPreviousResponseID {
-		if prev := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()); prev != "" {
-			normalized, errDelete := sjson.DeleteBytes(rawJSON, "type")
-			if errDelete != nil {
-				normalized = bytes.Clone(rawJSON)
-			}
-			if !gjson.GetBytes(normalized, "model").Exists() {
-				modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
-				if modelName != "" {
-					normalized, _ = sjson.SetBytes(normalized, "model", modelName)
-				}
-			}
-			if !gjson.GetBytes(normalized, "instructions").Exists() {
-				instructions := gjson.GetBytes(lastRequest, "instructions")
-				if instructions.Exists() {
-					normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
-				}
-			}
-			normalized, _ = sjson.SetBytes(normalized, "stream", true)
-			return normalized, bytes.Clone(normalized), nil
-		}
-	}
-
-	existingInput := gjson.GetBytes(lastRequest, "input")
-	mergedInput, errMerge := mergeJSONArrayRaw(existingInput.Raw, normalizeJSONArrayRaw(lastResponseOutput))
-	if errMerge != nil {
-		return nil, lastRequest, &interfaces.ErrorMessage{
-			StatusCode: http.StatusBadRequest,
-			Error:      fmt.Errorf("invalid previous response output: %w", errMerge),
-		}
-	}
-
-	mergedInput, errMerge = mergeJSONArrayRaw(mergedInput, nextInput.Raw)
-	if errMerge != nil {
-		return nil, lastRequest, &interfaces.ErrorMessage{
-			StatusCode: http.StatusBadRequest,
-			Error:      fmt.Errorf("invalid request input: %w", errMerge),
-		}
-	}
-
-	normalized, errDelete := sjson.DeleteBytes(rawJSON, "type")
-	if errDelete != nil {
-		normalized = bytes.Clone(rawJSON)
-	}
-	normalized, _ = sjson.DeleteBytes(normalized, "previous_response_id")
-	var errSet error
-	normalized, errSet = sjson.SetRawBytes(normalized, "input", []byte(mergedInput))
-	if errSet != nil {
-		return nil, lastRequest, &interfaces.ErrorMessage{
-			StatusCode: http.StatusBadRequest,
-			Error:      fmt.Errorf("failed to merge websocket input: %w", errSet),
-		}
+		return normalized
 	}
 	if !gjson.GetBytes(normalized, "model").Exists() {
 		modelName := strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
@@ -307,8 +233,117 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 			normalized, _ = sjson.SetRawBytes(normalized, "instructions", []byte(instructions.Raw))
 		}
 	}
-	normalized, _ = sjson.SetBytes(normalized, "stream", true)
+	return normalized
+}
+
+func normalizeResponsesWebsocketRequestSnapshot(normalized []byte) ([]byte, []byte, *interfaces.ErrorMessage) {
 	return normalized, bytes.Clone(normalized), nil
+}
+
+func normalizeResponseCreateRequest(rawJSON []byte) ([]byte, []byte, *interfaces.ErrorMessage) {
+	normalized := deleteResponsesWebsocketRequestType(rawJSON)
+	normalized = setResponsesWebsocketStreamTrue(normalized)
+	if !gjson.GetBytes(normalized, "input").Exists() {
+		normalized, _ = sjson.SetRawBytes(normalized, "input", []byte("[]"))
+	}
+
+	modelName := strings.TrimSpace(gjson.GetBytes(normalized, "model").String())
+	if modelName == "" {
+		return nil, nil, &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      fmt.Errorf("missing model in response.create request"),
+		}
+	}
+	return normalizeResponsesWebsocketRequestSnapshot(normalized)
+}
+
+func parseResponsesWebsocketInputArray(rawJSON []byte, lastRequest []byte) (gjson.Result, *interfaces.ErrorMessage) {
+	nextInput := gjson.GetBytes(rawJSON, "input")
+	if !nextInput.Exists() || !nextInput.IsArray() {
+		return gjson.Result{}, &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      fmt.Errorf("websocket request requires array field: input"),
+		}
+	}
+	return nextInput, nil
+}
+
+func normalizeIncrementalResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, allowIncrementalInputWithPreviousResponseID bool) ([]byte, []byte, bool) {
+	if !allowIncrementalInputWithPreviousResponseID {
+		return nil, nil, false
+	}
+	if prev := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()); prev == "" {
+		return nil, nil, false
+	}
+
+	normalized := deleteResponsesWebsocketRequestType(rawJSON)
+	normalized = inheritResponsesWebsocketRequestFields(normalized, lastRequest)
+	normalized = setResponsesWebsocketStreamTrue(normalized)
+	next, snapshot, _ := normalizeResponsesWebsocketRequestSnapshot(normalized)
+	return next, snapshot, true
+}
+
+func mergeResponsesWebsocketSubsequentInput(lastRequest []byte, lastResponseOutput []byte, nextInputRaw string) (string, *interfaces.ErrorMessage) {
+	existingInput := gjson.GetBytes(lastRequest, "input")
+	mergedInput, errMerge := mergeJSONArrayRaw(existingInput.Raw, normalizeJSONArrayRaw(lastResponseOutput))
+	if errMerge != nil {
+		return "", &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      fmt.Errorf("invalid previous response output: %w", errMerge),
+		}
+	}
+
+	mergedInput, errMerge = mergeJSONArrayRaw(mergedInput, nextInputRaw)
+	if errMerge != nil {
+		return "", &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      fmt.Errorf("invalid request input: %w", errMerge),
+		}
+	}
+	return mergedInput, nil
+}
+
+func normalizeMergedResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, nextInput gjson.Result) ([]byte, []byte, *interfaces.ErrorMessage) {
+	mergedInput, errMsg := mergeResponsesWebsocketSubsequentInput(lastRequest, lastResponseOutput, nextInput.Raw)
+	if errMsg != nil {
+		return nil, lastRequest, errMsg
+	}
+
+	normalized := deleteResponsesWebsocketRequestType(rawJSON)
+	normalized, _ = sjson.DeleteBytes(normalized, "previous_response_id")
+	var errSet error
+	normalized, errSet = sjson.SetRawBytes(normalized, "input", []byte(mergedInput))
+	if errSet != nil {
+		return nil, lastRequest, &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      fmt.Errorf("failed to merge websocket input: %w", errSet),
+		}
+	}
+	normalized = inheritResponsesWebsocketRequestFields(normalized, lastRequest)
+	normalized = setResponsesWebsocketStreamTrue(normalized)
+	return normalizeResponsesWebsocketRequestSnapshot(normalized)
+}
+
+func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, allowIncrementalInputWithPreviousResponseID bool) ([]byte, []byte, *interfaces.ErrorMessage) {
+	if len(lastRequest) == 0 {
+		return nil, lastRequest, &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      fmt.Errorf("websocket request received before response.create"),
+		}
+	}
+
+	nextInput, errMsg := parseResponsesWebsocketInputArray(rawJSON, lastRequest)
+	if errMsg != nil {
+		return nil, lastRequest, errMsg
+	}
+
+	// Websocket v2 mode uses response.create with previous_response_id + incremental input.
+	// Do not expand it into a full input transcript; upstream expects the incremental payload.
+	if normalized, snapshot, ok := normalizeIncrementalResponseSubsequentRequest(rawJSON, lastRequest, allowIncrementalInputWithPreviousResponseID); ok {
+		return normalized, snapshot, nil
+	}
+
+	return normalizeMergedResponseSubsequentRequest(rawJSON, lastRequest, lastResponseOutput, nextInput)
 }
 
 func mergeJSONArrayRaw(existingRaw, appendRaw string) (string, error) {
